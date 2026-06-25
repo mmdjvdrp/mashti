@@ -1,6 +1,6 @@
 import os
 from flask import Flask, render_template, request, send_file, jsonify
-import pypdf  # استفاده از کتابخانه سبک و جدید بدون نیاز به fitz
+import pypdf
 
 app = Flask(__name__)
 
@@ -12,15 +12,24 @@ os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
 
 def compress_pdf(input_path, output_path):
     """
-    فشرده‌سازی امن، سبک و سریع با pypdf
+    فشرده‌سازی ساختار فایل و کاهش هوشمند کیفیت تصاویر درون PDF
     """
     writer = pypdf.PdfWriter(clone_from=input_path)
     
-    # فشرده‌سازی جریان محتوای صفحات
+    # ۱. فشرده‌سازی کدهای متنی و ساختاری صفحات
     for page in writer.pages:
         page.compress_content_streams()
         
-    # حذف تصاویر و اشیاء تکراری یا بدون استفاده برای کاهش حجم بیشتر
+        # ۲. کاهش حجم تصاویر داخل صفحات (تاثیرگذارترین بخش در کاهش حجم)
+        try:
+            for img in page.images:
+                # تبدیل عکس به کیفیت ۶۰ درصد (کاهش چشمگیر حجم با حفظ نسبی کیفیت)
+                img.replace(img.image, quality=60)
+        except Exception:
+            # اگر تصویری با فرمت خاص خطا داد، از آن عبور کند تا بقیه پردازش شوند
+            pass
+        
+    # ۳. حذف تصاویر تکراری و داده‌های زائد
     writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
 
     with open(output_path, "wb") as f:
@@ -71,7 +80,7 @@ def compress():
         except Exception as e:
             return jsonify({'error': f'خطا در پردازش فایل: {str(e)}'}), 500
         finally:
-            # حذف فایل آپلود شده اصلی برای خالی نگه داشتن فضای سرور
+            # حذف فایل آپلود شده اصلی جهت حفظ فضای سرور
             if os.path.exists(input_path):
                 os.remove(input_path)
     
