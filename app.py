@@ -11,16 +11,19 @@ os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
 
 def compress_pdf(input_path, output_path):
     """
-    فشرده‌سازی با استفاده از کتابخانه سبک pypdf بدون مصرف رم زیاد
+    فشرده‌سازی امن و سبک با pypdf
     """
-    reader = pypdf.PdfReader(input_path)
-    writer = pypdf.PdfWriter()
-
-    for page in reader.pages:
-        # فشرده‌سازی محتوای متنی و ساختاری صفحه
+    # بارگذاری مستقیم فایل در شیء نویسنده برای برطرف شدن خطای ساختاری
+    writer = pypdf.PdfWriter(clone_from=input_path)
+    
+    # فشرده‌سازی جریان محتوای صفحات
+    for page in writer.pages:
         page.compress_content_streams()
-        writer.add_page(page)
+        
+    # یک تکنیک عالی برای حذف تصاویر و اشیاء تکراری یا بدون استفاده در فایل
+    writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
 
+    # ذخیره فایل نهایی
     with open(output_path, "wb") as f:
         writer.write(f)
 
