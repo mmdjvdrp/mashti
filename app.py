@@ -1,9 +1,10 @@
 import os
 from flask import Flask, render_template, request, send_file, jsonify
-import pypdf  # استفاده از کتابخانه سبک‌تر جایگزین
+import pypdf  # استفاده از کتابخانه سبک و جدید بدون نیاز به fitz
 
 app = Flask(__name__)
 
+# مسیرهای ذخیره‌سازی فایل‌ها
 UPLOAD_FOLDER = 'uploads'
 COMPRESSED_FOLDER = 'compressed'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -11,19 +12,17 @@ os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
 
 def compress_pdf(input_path, output_path):
     """
-    فشرده‌سازی امن و سبک با pypdf
+    فشرده‌سازی امن، سبک و سریع با pypdf
     """
-    # بارگذاری مستقیم فایل در شیء نویسنده برای برطرف شدن خطای ساختاری
     writer = pypdf.PdfWriter(clone_from=input_path)
     
     # فشرده‌سازی جریان محتوای صفحات
     for page in writer.pages:
         page.compress_content_streams()
         
-    # یک تکنیک عالی برای حذف تصاویر و اشیاء تکراری یا بدون استفاده در فایل
+    # حذف تصاویر و اشیاء تکراری یا بدون استفاده برای کاهش حجم بیشتر
     writer.compress_identical_objects(remove_duplicates=True, remove_unreferenced=True)
 
-    # ذخیره فایل نهایی
     with open(output_path, "wb") as f:
         writer.write(f)
 
@@ -45,11 +44,14 @@ def compress():
         output_filename = f"compressed_{file.filename}"
         output_path = os.path.join(COMPRESSED_FOLDER, output_filename)
         
+        # ذخیره موقت فایل اصلی
         file.save(input_path)
         
         try:
+            # فرآیند فشرده‌سازی
             compress_pdf(input_path, output_path)
             
+            # محاسبه میزان کاهش حجم
             orig_size = os.path.getsize(input_path)
             comp_size = os.path.getsize(output_path)
             
@@ -69,6 +71,7 @@ def compress():
         except Exception as e:
             return jsonify({'error': f'خطا در پردازش فایل: {str(e)}'}), 500
         finally:
+            # حذف فایل آپلود شده اصلی برای خالی نگه داشتن فضای سرور
             if os.path.exists(input_path):
                 os.remove(input_path)
     
@@ -79,7 +82,7 @@ def download(filename):
     file_path = os.path.join(COMPRESSED_FOLDER, filename)
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
-    return "فایل یافت نشد.", 404
+    return "فایل مورد نظر یافت نشد.", 404
 
 if __name__ == '__main__':
     app.run(debug=True)
