@@ -1,10 +1,9 @@
 import os
 from flask import Flask, render_template, request, send_file, jsonify
-import fitz  # کتابخانه PyMuPDF برای کار با PDF
+import pypdf  # استفاده از کتابخانه سبک‌تر جایگزین
 
 app = Flask(__name__)
 
-# مسیرهای ذخیره‌سازی فایل‌ها
 UPLOAD_FOLDER = 'uploads'
 COMPRESSED_FOLDER = 'compressed'
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
@@ -12,12 +11,18 @@ os.makedirs(COMPRESSED_FOLDER, exist_ok=True)
 
 def compress_pdf(input_path, output_path):
     """
-    فشرده‌سازی PDF با استفاده از حذف داده‌های تکراری و بهینه‌سازی ساختار داخلی فایل
+    فشرده‌سازی با استفاده از کتابخانه سبک pypdf بدون مصرف رم زیاد
     """
-    doc = fitz.open(input_path)
-    # ذخیره فایل با فعال کردن فشرده‌سازی (deflate) و پاکسازی موارد بدون استفاده (garbage=4)
-    doc.save(output_path, garbage=4, deflate=True, clean=True)
-    doc.close()
+    reader = pypdf.PdfReader(input_path)
+    writer = pypdf.PdfWriter()
+
+    for page in reader.pages:
+        # فشرده‌سازی محتوای متنی و ساختاری صفحه
+        page.compress_content_streams()
+        writer.add_page(page)
+
+    with open(output_path, "wb") as f:
+        writer.write(f)
 
 @app.route('/')
 def index():
@@ -37,18 +42,14 @@ def compress():
         output_filename = f"compressed_{file.filename}"
         output_path = os.path.join(COMPRESSED_FOLDER, output_filename)
         
-        # ذخیره موقت فایل اصلی
         file.save(input_path)
         
         try:
-            # عملیات فشرده‌سازی
             compress_pdf(input_path, output_path)
             
-            # محاسبه میزان کاهش حجم
             orig_size = os.path.getsize(input_path)
             comp_size = os.path.getsize(output_path)
             
-            # اگر حجم فشرده‌شده بیشتر یا برابر با اصلی بود (در فایل‌هایی که قبلاً کاملاً فشرده شده‌اند)
             if comp_size >= orig_size:
                 reduction = 0
             else:
@@ -65,7 +66,6 @@ def compress():
         except Exception as e:
             return jsonify({'error': f'خطا در پردازش فایل: {str(e)}'}), 500
         finally:
-            # حذف فایل آپلود شده اصلی برای خالی نگه داشتن فضای سرور
             if os.path.exists(input_path):
                 os.remove(input_path)
     
@@ -76,7 +76,7 @@ def download(filename):
     file_path = os.path.join(COMPRESSED_FOLDER, filename)
     if os.path.exists(file_path):
         return send_file(file_path, as_attachment=True)
-    return "فایل مورد نظر یافت نشد.", 404
+    return "فایل یافت نشد.", 404
 
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True)
