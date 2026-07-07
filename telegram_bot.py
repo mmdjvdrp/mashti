@@ -6,26 +6,23 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# خواندن کلیدها به صورت مخفی و امن از سرور
+# خواندن کلیدها از Render
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# راه‌اندازی وب‌سرور برای Render
+# راه‌اندازی سرور
 app = Flask(__name__)
-
 @app.route('/')
 def home():
     return "✅ سرور ربات روشن است!"
-
 def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
 threading.Thread(target=run_web, daemon=True).start()
 
-# اتصال به سرویس‌ها
+# اتصال
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai_client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
@@ -34,68 +31,92 @@ bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 def handle_message(message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name
-    user_text = message.text
+    text = message.text.strip()
+    text_lower = text.lower()
 
     bot.send_chat_action(user_id, 'typing')
 
     try:
-        # کوچک کردن حروف برای اینکه اگر نوشتید save یا SAVE یا Save، ربات متوجه شود
-        text_lower = user_text.lower().strip()
+        # ==========================================
+        # بخش اول: گاوصندوق امنیتی و مخفی
+        # ==========================================
+        if text.startswith("/lock"):
+            try:
+                parts = text.split(" ", 3)
+                supabase.table("secure_vaults").insert({
+                    "user_id": user_id, "box_name": parts[1], 
+                    "password": parts[2], "content": parts[3]
+                }).execute()
+                bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
+            except Exception:
+                bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
+            return 
+
+        if text.startswith("/unlock"):
+            try:
+                parts = text.split(" ", 2)
+                res = supabase.table("secure_vaults").select("content").eq("user_id", user_id).eq("box_name", parts[1]).eq("password", parts[2]).execute()
+                if res.data:
+                    box_contents = "\n- ".join([row["content"] for row in res.data])
+                    bot.reply_to(message, f"🔓 اطلاعات جعبه:\n\n- {box_contents}")
+                else:
+                    bot.reply_to(message, "❌ جعبه پیدا نشد یا رمز اشتباه است!")
+            except Exception:
+                bot.reply_to(message, "❌ فرمت اشتباه است: /unlock [اسم] [رمز]")
+            return 
+
+        # ==========================================
+        # بخش دوم: چت، حافظه و اینترنت
+        # ==========================================
         
-        # 1. بررسی اینکه آیا شما دستور ذخیره داده‌اید؟
         is_save = False
-        if text_lower.endswith("save") or text_lower.endswith("s-a-v-e") or text_lower.endswith("ذخیره کن"):
+        if text_lower.endswith("save") or text_lower.endswith("ذخیره کن"):
             is_save = True
 
-        # 2. سیستم طبقه‌بندی دیتابیس (جدا کردن فکت از چت معمولی)
         if is_save:
-            # ذخیره پیام به عنوان "اطلاعات دائمی و ابدی" (fact)
-            supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": user_text}).execute()
+            supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": text}).execute()
         else:
-            # ذخیره پیام به عنوان "چت روزمره" (user)
-            supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": user_text}).execute()
+            supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": text}).execute()
 
-        # 3. استخراج اطلاعات از دیتابیس به صورت هوشمند و بهینه
-        
-        # الف) خواندن تمام اطلاعات دائمی (facts) شما
         facts_res = supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact").execute()
         saved_facts = [row["content"] for row in facts_res.data]
         
-        # ب) خواندن تاریخچه چت عادی (فقط 10 تای آخر را می‌خواند تا حجم و اینترنت اشغال نشود)
         history_res = supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10).execute()
-        chat_history = history_res.data[::-1] # برعکس کردن برای ترتیب زمانی درست
+        chat_history = history_res.data[::-1]
 
-        # 4. آماده‌سازی مغز ربات (تزریق اطلاعات به هسته مرکزی جمنای)
-        sys_instruct = f"تو یک دستیار شخصی باهوش هستی. نام کاربری که با تو صحبت می‌کند {user_name} است. به زبان فارسی صمیمی پاسخ بده.\n"
+        # 🧠 هسته مرکزی ارتقا یافته (دستور یادگیری و تطبیق‌پذیری)
+        sys_instruct = f"""تو یک دستیار هوشمند و در حال پیشرفت هستی. نام کاربر تو {user_name} است.
+1. تو به اینترنت متصل هستی. اگر کاربر سوالی پرسید که نیاز به اطلاعات لحظه‌ای (مثل اخبار، قیمت‌ها، ورزش و آب‌وهوا) داشت، حتماً از جستجوی گوگل استفاده کن.
+2. با لحن صمیمی و دوستانه پاسخ بده.
+3. سعی کن از لحن و مکالمات قبلی کاربر یاد بگیری و خودت را با سلیقه او وفق بدهی."""
         
         if saved_facts:
             facts_text = "\n- ".join(saved_facts)
-            sys_instruct += f"\n⚠️ تو این اطلاعات مهم را به صورت دائمی از این کاربر در حافظه‌ات ذخیره کرده‌ای و باید همیشه طبق آن‌ها رفتار کنی:\n- {facts_text}"
+            sys_instruct += f"\n\n⚠️ اطلاعات زیر را درباره کاربر می‌دانی. فقط در زمان نیاز به آن‌ها اشاره کن و طوطی‌وار تکرارشان نکن:\n- {facts_text}"
 
-        config = types.GenerateContentConfig(system_instruction=sys_instruct)
+        # 🌐 روشن کردن قابلیت جستجو در گوگل (Google Search Tool)
+        config = types.GenerateContentConfig(
+            system_instruction=sys_instruct,
+            tools=[{"google_search": {}}]  # این یک خط ربات شما را به اینترنت وصل می‌کند!
+        )
 
-        # 5. ساختن مکالمه‌ای که برای گوگل ارسال می‌شود
         contents = []
         for row in chat_history:
             contents.append(types.Content(role=row["role"], parts=[types.Part.from_text(text=row["content"])]))
             
-        # اگر پیام شما دارای کلمه Save بود، آن را موقتاً به این مکالمه اضافه می‌کنیم تا ربات بتواند به شما بگوید "چشم، ذخیره کردم!"
         if is_save:
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-        # 6. دریافت پاسخ از هوش مصنوعی
+        # ارتباط با جمنای و دریافت پاسخ (همراه با جستجوی وب در صورت نیاز)
         gemini_response = genai_client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
         bot_reply = gemini_response.text
 
-        # 7. فقط اگر چت روزمره بود، جواب ربات را ذخیره کن (تا دیتابیس با پیام‌های اضافی مثل "چشم ذخیره کردم" شلوغ نشود)
         if not is_save:
             supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}).execute()
 
-        # ارسال پاسخ نهایی به شما
         bot.reply_to(message, bot_reply)
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
 
-# این خط جا افتاده بود! بدون این خط برنامه سریعاً بسته می‌شود
 bot.infinity_polling()
