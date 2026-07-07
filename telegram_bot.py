@@ -6,13 +6,13 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# 1. تنظیمات کلیدها (اینجا اطلاعات خودت را بگذار)
-TELEGRAM_BOT_TOKEN = "8728567806:AAHFdit3ATkGwWZzf5dpoJ9ZEj0qK4_D8EA"
-GEMINI_API_KEY = "AQ.Ab8RN6JBqx0GnZF8_Tj6pjTlEP0kBI-Kmkt6pGZ4-2E_wwTljQ"
-SUPABASE_URL = "https://yoooqtgynrsmawccpqyj.supabase.co"
-SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlvb29xdGd5bnJzbWF3Y2NwcXlqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzM1MjU0OSwiZXhwIjoyMDk4OTI4NTQ5fQ.2AEHs8i53FBPUC_n_06g35JmmcGgEf1rALSkEgvI0tc"
+# خواندن کلیدها به صورت مخفی و امن از سرور
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# 2. راه‌اندازی سرور وب کوچک برای اینکه Render ربات را خاموش نکند
+# راه‌اندازی وب‌سرور برای Render
 app = Flask(__name__)
 
 @app.route('/')
@@ -23,19 +23,13 @@ def run_web():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# اجرای وب‌سرور در پس‌زمینه
 threading.Thread(target=run_web, daemon=True).start()
 
-# 3. راه‌اندازی ربات و دیتابیس
+# اتصال به سرویس‌ها
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-# دور زدن باگ گوگل و ارسال دستی کلید
-genai_client = genai.Client(
-    api_key=GEMINI_API_KEY,
-    http_options=types.HttpOptions(headers={"x-goog-api-key": GEMINI_API_KEY})
-)
+genai_client = genai.Client(api_key=GEMINI_API_KEY)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
-# 4. دریافت پیام‌های تلگرام
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     user_id = message.from_user.id
@@ -71,5 +65,4 @@ def handle_message(message):
     except Exception as e:
         bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
 
-# 5. روشن نگه‌داشتن ربات تلگرام
 bot.infinity_polling()
