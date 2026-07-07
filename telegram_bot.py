@@ -108,7 +108,7 @@ def handle_message(message):
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
         # ارتباط با جمنای و دریافت پاسخ (همراه با جستجوی وب در صورت نیاز)
-        gemini_response = genai_client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+        gemini_response = genai_client.models.generate_content(model='gemini-1.5-flash', contents=contents, config=config)
         bot_reply = gemini_response.text
 
         if not is_save:
