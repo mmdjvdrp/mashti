@@ -39,30 +39,60 @@ def handle_message(message):
     bot.send_chat_action(user_id, 'typing')
 
     try:
-        # ذخیره پیام کاربر
-        supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": user_text}).execute()
-
-        # خواندن تاریخچه از دیتابیس
-        response = supabase.table("chat_memory").select("*").eq("user_id", user_id).order("created_at", desc=False).limit(20).execute()
+        # کوچک کردن حروف برای اینکه اگر نوشتید save یا SAVE یا Save، ربات متوجه شود
+        text_lower = user_text.lower().strip()
         
-        contents = []
-        for row in response.data:
-            contents.append(types.Content(role=row["role"], parts=[types.Part.from_text(text=row["content"])]))
+        # 1. بررسی اینکه آیا شما دستور ذخیره داده‌اید؟
+        is_save = False
+        if text_lower.endswith("save") or text_lower.endswith("s-a-v-e") or text_lower.endswith("ذخیره کن"):
+            is_save = True
 
-        sys_instruct = f"تو یک دستیار شخصی در تلگرام هستی. نام کاربری که با تو صحبت می‌کند {user_name} است. به زبان فارسی صمیمی پاسخ بده."
+        # 2. سیستم طبقه‌بندی دیتابیس (جدا کردن فکت از چت معمولی)
+        if is_save:
+            # ذخیره پیام به عنوان "اطلاعات دائمی و ابدی" (fact)
+            supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": user_text}).execute()
+        else:
+            # ذخیره پیام به عنوان "چت روزمره" (user)
+            supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": user_text}).execute()
+
+        # 3. استخراج اطلاعات از دیتابیس به صورت هوشمند و بهینه
+        
+        # الف) خواندن تمام اطلاعات دائمی (facts) شما
+        facts_res = supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact").execute()
+        saved_facts = [row["content"] for row in facts_res.data]
+        
+        # ب) خواندن تاریخچه چت عادی (فقط 10 تای آخر را می‌خواند تا حجم و اینترنت اشغال نشود)
+        history_res = supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10).execute()
+        chat_history = history_res.data[::-1] # برعکس کردن برای ترتیب زمانی درست
+
+        # 4. آماده‌سازی مغز ربات (تزریق اطلاعات به هسته مرکزی جمنای)
+        sys_instruct = f"تو یک دستیار شخصی باهوش هستی. نام کاربری که با تو صحبت می‌کند {user_name} است. به زبان فارسی صمیمی پاسخ بده.\n"
+        
+        if saved_facts:
+            facts_text = "\n- ".join(saved_facts)
+            sys_instruct += f"\n⚠️ تو این اطلاعات مهم را به صورت دائمی از این کاربر در حافظه‌ات ذخیره کرده‌ای و باید همیشه طبق آن‌ها رفتار کنی:\n- {facts_text}"
+
         config = types.GenerateContentConfig(system_instruction=sys_instruct)
 
-        # دریافت جواب از گوگل
+        # 5. ساختن مکالمه‌ای که برای گوگل ارسال می‌شود
+        contents = []
+        for row in chat_history:
+            contents.append(types.Content(role=row["role"], parts=[types.Part.from_text(text=row["content"])]))
+            
+        # اگر پیام شما دارای کلمه Save بود، آن را موقتاً به این مکالمه اضافه می‌کنیم تا ربات بتواند به شما بگوید "چشم، ذخیره کردم!"
+        if is_save:
+            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=user_text)]))
+
+        # 6. دریافت پاسخ از هوش مصنوعی
         gemini_response = genai_client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
         bot_reply = gemini_response.text
 
-        # ذخیره جواب ربات
-        supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}).execute()
+        # 7. فقط اگر چت روزمره بود، جواب ربات را ذخیره کن (تا دیتابیس با پیام‌های اضافی مثل "چشم ذخیره کردم" شلوغ نشود)
+        if not is_save:
+            supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}).execute()
 
-        # ارسال جواب
+        # ارسال پاسخ نهایی به شما
         bot.reply_to(message, bot_reply)
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
-
-bot.infinity_polling()
