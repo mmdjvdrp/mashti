@@ -96,3 +96,6 @@ def handle_message(message):
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
+
+# این خط جا افتاده بود! بدون این خط برنامه سریعاً بسته می‌شود
+bot.infinity_polling()
