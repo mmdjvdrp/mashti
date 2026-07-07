@@ -1,13 +1,16 @@
 import os
-import threading
 import telebot
 import random
-from flask import Flask
+from dotenv import load_dotenv
 from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# خواندن کلیدها از Render
+# ==========================================
+# ⚙️ خواندن کلیدها از فایل .env
+# ==========================================
+load_dotenv()
+
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
@@ -22,17 +25,9 @@ GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
 # برای هر کلید، یک خط ارتباطی جداگانه با گوگل می‌سازیم
 genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
-# راه‌اندازی سرور
-app = Flask(__name__)
-@app.route('/')
-def home():
-    return "✅ سرور ربات روشن است!"
-def run_web():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host="0.0.0.0", port=port)
-threading.Thread(target=run_web, daemon=True).start()
-
-# اتصال به دیتابیس و تلگرام
+# ==========================================
+# 🔗 اتصال به دیتابیس و تلگرام
+# ==========================================
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
