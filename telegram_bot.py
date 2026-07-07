@@ -28,7 +28,11 @@ threading.Thread(target=run_web, daemon=True).start()
 
 # 3. راه‌اندازی ربات و دیتابیس
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai_client = genai.Client(api_key=GEMINI_API_KEY)
+# دور زدن باگ گوگل و ارسال دستی کلید
+genai_client = genai.Client(
+    api_key=GEMINI_API_KEY,
+    http_options=types.HttpOptions(headers={"x-goog-api-key": GEMINI_API_KEY})
+)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 
 # 4. دریافت پیام‌های تلگرام
