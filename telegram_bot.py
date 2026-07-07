@@ -8,7 +8,7 @@ from google.genai import types
 
 # 1. تنظیمات کلیدها (اینجا اطلاعات خودت را بگذار)
 TELEGRAM_BOT_TOKEN = "8728567806:AAHFdit3ATkGwWZzf5dpoJ9ZEj0qK4_D8EA"
-GEMINI_API_KEY = "AQ.Ab8RN6JBqx0GnZF8_Tj6pjTlEP0kBI-Kmkt6pGZ4-2E_wwTljQ "
+GEMINI_API_KEY = "AQ.Ab8RN6JBqx0GnZF8_Tj6pjTlEP0kBI-Kmkt6pGZ4-2E_wwTljQ"
 SUPABASE_URL = "https://yoooqtgynrsmawccpqyj.supabase.co"
 SUPABASE_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inlvb29xdGd5bnJzbWF3Y2NwcXlqIiwicm9sZSI6InNlcnZpY2Vfcm9sZSIsImlhdCI6MTc4MzM1MjU0OSwiZXhwIjoyMDk4OTI4NTQ5fQ.2AEHs8i53FBPUC_n_06g35JmmcGgEf1rALSkEgvI0tc"
 
