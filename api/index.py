@@ -1,13 +1,14 @@
 import os
 import telebot
 import random
+from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
 # ==========================================
-# ⚙️ خواندن کلیدها از فایل .env
+# ⚙️ خواندن کلیدها از متغیرهای محیطی
 # ==========================================
 load_dotenv()
 
@@ -18,25 +19,29 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 # ==========================================
 # 🔑 سیستم چرخش کلیدها (Load Balancing)
 # ==========================================
-# کلیدهای جمنای که با ویرگول جدا کرده‌اید را دریافت کرده و تبدیل به یک لیست می‌کنیم
 keys_string = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
-
-# برای هر کلید، یک خط ارتباطی جداگانه با گوگل می‌سازیم
 genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
 # ==========================================
-# 🔗 اتصال به دیتابیس و تلگرام
+# 🔗 اتصال به دیتابیس، تلگرام و فلسک
 # ==========================================
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+app = Flask(__name__)  # ایجاد اپلیکیشن تحت وب برای ورسل
 
+# ==========================================
+# 🧠 منطق ربات شما
+# ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     user_id = message.from_user.id
-    user_name = message.from_user.first_name
-    text = message.text.strip()
+    user_name = message.from_user.first_name or "کاربر"
+    text = message.text.strip() if message.text else ""
     text_lower = text.lower()
+
+    if not text:
+        return
 
     bot.send_chat_action(user_id, 'typing')
 
@@ -97,33 +102,24 @@ def handle_message(message):
         if is_save:
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-        # ==========================================
-        # 🔄 تلاش خودکار برای عبور از محدودیت گوگل
-        # ==========================================
+        # 3. ارتباط با جمنای
         bot_reply = None
-        
-        # کلیدها را به صورت تصادفی پخش می‌کنیم تا فشار روی یک کلید نیفتد
         random.shuffle(genai_clients) 
         
         for client in genai_clients:
             try:
-                # درخواست با مدل اصلی و قدرتمند
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply = response.text
-                break # اگر موفق شد، از حلقه خارج شو
+                break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    # اگر این کلید محدود شده بود، ادامه بده و با کلید بعدی تست کن
                     continue
                 else:
-                    # اگر خطای دیگری بود (مثل قطعی نت گوگل)، آن را اعلام کن
                     raise e
                     
-        # اگر حلقه تمام شد و هیچ کلیدی کار نکرد:
         if not bot_reply:
             bot_reply = "❌ تمام کلیدهای هوش مصنوعیِ من موقتاً مسدود شده‌اند! لطفاً ۳۰ ثانیه دیگر پیام بدهید."
 
-        # ذخیره جواب ربات در دیتابیس (اگر موفقیت‌آمیز بود)
         if not is_save and bot_reply and not bot_reply.startswith("❌"):
             supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}).execute()
 
@@ -132,4 +128,22 @@ def handle_message(message):
     except Exception as e:
         bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
 
-bot.infinity_polling()
+# ==========================================
+# 🌐 تنظیمات Webhook برای Vercel
+# ==========================================
+@app.route('/', methods=['POST'])
+def webhook():
+    """دریافت پیام‌ها از تلگرام و ارسال به ربات"""
+    if request.headers.get('content-type') == 'application/json':
+        json_string = request.get_data().decode('utf-8')
+        update = telebot.types.Update.de_json(json_string)
+        bot.process_new_updates([update])
+        return jsonify({"status": "ok"}), 200
+    return jsonify({"status": "error"}), 403
+
+@app.route('/', methods=['GET'])
+def index():
+    """تست روشن بودن سرور (وقتی آدرس سایت رو باز می‌کنی اینو می‌بینی)"""
+    return "✅ ربات روی سرور Vercel فعال است و با Webhook کار می‌کند!"
+
+# ❌ bot.infinity_polling() کاملا حذف شد!
