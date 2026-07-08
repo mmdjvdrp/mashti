@@ -18,7 +18,7 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 keys_string = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
 
-bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
+bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
