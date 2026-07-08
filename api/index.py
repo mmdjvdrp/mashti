@@ -151,28 +151,26 @@ def handle_message(message):
 # 🌐 تنظیمات Webhook برای Vercel
 # ==========================================
 
-# یک حافظه موقت برای جلوگیری از پردازش پیام‌های تکراریِ تلگرام
-processed_updates = set()
-
 @app.route('/', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 🟢 جادوی ضد پیامِ تکراری 🟢
-        if update.update_id in processed_updates:
-            # اگر این پیام قبلا در حال پردازش بود، به تلگرام میگیم باشه مرسی و کاری نمیکنیم!
-            return jsonify({"status": "already processed"}), 200
+        # 🟢 قفل کردن همزمانی با دیتابیس Supabase 🟢
+        try:
+            # تلاش برای ثبت آیدی پیام در دیتابیس مشترک
+            supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
+        except Exception as e:
+            err_msg = str(e)
+            # اگر آیدی قبلاً ثبت شده بود (ارور duplicate)، یعنی پیام تکراریه و بلافاصله متوقفش کن
+            if "duplicate" in err_msg or "23505" in err_msg:
+                return jsonify({"status": "already processed"}), 200
             
-        # اضافه کردن آیدی پیام به لیست پردازش شده‌ها
-        processed_updates.add(update.update_id)
+            # اگر خطای دیگه‌ای بود (مثلاً جدول هنوز ساخته نشده)، اجازه بده ربات کارش رو بکنه تا قطع نشه
+            print(f"Deduplication bypass: {err_msg}")
+        # --------------------------------------------
         
-        # برای اینکه رم سرور پر نشه، هر وقت لیست بزرگ شد پاکش می‌کنیم
-        if len(processed_updates) > 1000:
-            processed_updates.clear()
-            
-        # حالا پیام رو میدیم به ربات برای پردازش
         bot.process_new_updates([update])
         return jsonify({"status": "ok"}), 200
         
@@ -180,4 +178,4 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات بدون مشکل، با سیستم خودترمیم‌شونده و سیستم ضدتکرار روی Vercel فعال است!"
+    return "✅ ربات بدون مشکل، با سیستم خودترمیم‌شونده و قفل دیتابیس روی Vercel فعال است!"
