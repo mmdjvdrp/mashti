@@ -1,4 +1,5 @@
 pyTelegramBotAPI
 supabase
 google-genai
-flask
+Flask
+python-dotenv
