@@ -18,9 +18,23 @@ SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 keys_string = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
 
-# تلگرام و فلسک مشکل کانکشن سرورلس ندارن، پس بیرون می‌مونن
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
 app = Flask(__name__)
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
+
+# ==========================================
+# 🛠️ سیستم خودترمیم‌شونده برای سوپابیس
+# ==========================================
+def db_run(query):
+    """اگر کانکشن دیتابیس خواب رفته بود، یک بار خطا رو نادیده می‌گیره و با کانکشن جدید دوباره تلاش می‌کنه"""
+    try:
+        return query.execute()
+    except Exception as e:
+        err = str(e).lower()
+        if "eof" in err or "disconnected" in err or "ssl" in err or "protocol" in err:
+            return query.execute() # تلاش مجدد با سوکتِ تازه
+        raise e
 
 # ==========================================
 # 🧠 منطق اصلی ربات
@@ -35,20 +49,20 @@ def handle_message(message):
     if not text:
         return
 
-    bot.send_chat_action(user_id, 'typing')
+    # حل مشکل قطعی سوکت تلگرام: اگر ارور داد نادیده می‌گیریم تا کانکشن تلگرام ریست بشه
+    try:
+        bot.send_chat_action(user_id, 'typing')
+    except Exception:
+        pass 
 
     try:
-        # 🟢 راه‌حل قطعی ارور SSL: ساخت کانکشن‌های تازه برای هر پیام 🟢
-        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-        genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
-
         # 1. بخش گاوصندوق امنیتی
         if text.startswith("/lock"):
             try:
                 parts = text.split(" ", 3)
-                supabase.table("secure_vaults").insert({
+                db_run(supabase.table("secure_vaults").insert({
                     "user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]
-                }).execute()
+                }))
                 bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
             except Exception:
                 bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
@@ -57,7 +71,7 @@ def handle_message(message):
         if text.startswith("/unlock"):
             try:
                 parts = text.split(" ", 2)
-                res = supabase.table("secure_vaults").select("content").eq("user_id", user_id).eq("box_name", parts[1]).eq("password", parts[2]).execute()
+                res = db_run(supabase.table("secure_vaults").select("content").eq("user_id", user_id).eq("box_name", parts[1]).eq("password", parts[2]))
                 if res.data:
                     box_contents = "\n- ".join([row["content"] for row in res.data])
                     bot.reply_to(message, f"🔓 اطلاعات جعبه:\n\n- {box_contents}")
@@ -73,14 +87,14 @@ def handle_message(message):
             is_save = True
 
         if is_save:
-            supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": text}).execute()
+            db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": text}))
         else:
-            supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": text}).execute()
+            db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": text}))
 
-        facts_res = supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact").execute()
+        facts_res = db_run(supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact"))
         saved_facts = [row["content"] for row in facts_res.data]
         
-        history_res = supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10).execute()
+        history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10))
         chat_history = history_res.data[::-1]
 
         sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر تو {user_name} است.
@@ -98,7 +112,7 @@ def handle_message(message):
         if is_save:
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-        # 3. ارتباط با جمنای
+        # 3. ارتباط با جمنای (با سیستم خودترمیم‌شونده قطعی سرور)
         bot_reply = None
         random.shuffle(genai_clients) 
         
@@ -108,21 +122,29 @@ def handle_message(message):
                 bot_reply = response.text
                 break
             except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    continue
+                err_str = str(e).lower()
+                # اگر گوگل کانکشن رو بسته بود، یک بار دیگه سریع با همون کلید تلاش کن
+                if "eof" in err_str or "disconnected" in err_str or "ssl" in err_str:
+                    try:
+                        response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+                        bot_reply = response.text
+                        break
+                    except:
+                        continue # اگر بازم نشد برو کلید بعدی
+                elif "429" in err_str or "exhausted" in err_str:
+                    continue # لیمیت شده، برو کلید بعدی
                 else:
                     raise e
                     
         if not bot_reply:
-            bot_reply = "❌ تمام کلیدهای هوش مصنوعیِ من موقتاً مسدود شده‌اند! لطفاً ۳۰ ثانیه دیگر پیام بدهید."
+            bot_reply = "❌ تمام کلیدهای هوش مصنوعی مسدود شده‌اند یا گوگل در دسترس نیست. لطفاً کمی بعد تلاش کنید."
 
         if not is_save and bot_reply and not bot_reply.startswith("❌"):
-            supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}).execute()
+            db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}))
 
         bot.reply_to(message, bot_reply)
 
     except Exception as e:
-        # برای عیب‌یابی دقیق‌تر، نوع ارور رو هم نمایش می‌دیم
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
@@ -139,4 +161,4 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات بدون مشکل روی Vercel فعال است!"
+    return "✅ ربات بدون مشکل و با سیستم خودترمیم‌شونده روی Vercel فعال است!"
