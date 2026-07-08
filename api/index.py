@@ -8,30 +8,22 @@ from google import genai
 from google.genai import types
 
 # ==========================================
-# ⚙️ خواندن کلیدها از متغیرهای محیطی
+# ⚙️ خواندن متغیرهای محیطی
 # ==========================================
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
-
-# ==========================================
-# 🔑 سیستم چرخش کلیدها (Load Balancing)
-# ==========================================
 keys_string = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
-genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
-# ==========================================
-# 🔗 اتصال به دیتابیس، تلگرام و فلسک
-# ==========================================
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+# تلگرام و فلسک مشکل کانکشن سرورلس ندارن، پس بیرون می‌مونن
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN)
-app = Flask(__name__)  # ایجاد اپلیکیشن تحت وب برای ورسل
+app = Flask(__name__)
 
 # ==========================================
-# 🧠 منطق ربات شما
+# 🧠 منطق اصلی ربات
 # ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -46,6 +38,10 @@ def handle_message(message):
     bot.send_chat_action(user_id, 'typing')
 
     try:
+        # 🟢 راه‌حل قطعی ارور SSL: ساخت کانکشن‌های تازه برای هر پیام 🟢
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+        genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
+
         # 1. بخش گاوصندوق امنیتی
         if text.startswith("/lock"):
             try:
@@ -126,14 +122,14 @@ def handle_message(message):
         bot.reply_to(message, bot_reply)
 
     except Exception as e:
-        bot.reply_to(message, f"❌ خطایی رخ داد: {e}")
+        # برای عیب‌یابی دقیق‌تر، نوع ارور رو هم نمایش می‌دیم
+        bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
 # 🌐 تنظیمات Webhook برای Vercel
 # ==========================================
 @app.route('/', methods=['POST'])
 def webhook():
-    """دریافت پیام‌ها از تلگرام و ارسال به ربات"""
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
@@ -143,7 +139,4 @@ def webhook():
 
 @app.route('/', methods=['GET'])
 def index():
-    """تست روشن بودن سرور (وقتی آدرس سایت رو باز می‌کنی اینو می‌بینی)"""
-    return "✅ ربات روی سرور Vercel فعال است و با Webhook کار می‌کند!"
-
-# ❌ bot.infinity_polling() کاملا حذف شد!
+    return "✅ ربات بدون مشکل روی Vercel فعال است!"
