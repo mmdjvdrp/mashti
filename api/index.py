@@ -3,7 +3,7 @@ import re
 import datetime
 import random
 import json
-import pytz  # 👈 اضافه شد برای مدیریت ساعت دقیق ایران
+import pytz
 import telebot
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -11,6 +11,8 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
+# اضافه کردن ماژول جدید تقویم
+import bot_planner_api
 # ==========================================
 # ⚙️ خواندن متغیرهای محیطی
 # ==========================================
