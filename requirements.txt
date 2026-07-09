@@ -3,3 +3,4 @@ supabase
 google-genai
 Flask
 python-dotenv
+pytz
