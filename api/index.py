@@ -74,7 +74,7 @@ def generate_planner_prompt_context(planner_data):
         status = "انجام شده" if is_done else "در انتظار انجام"
         tasks_text += f"- ID: {t['id']} | عنوان: {t['title']} | وضعیت: {status}\n"
         
-    return f"لیست کارهای امروز کاربر (از سایت تقویم):\n{tasks_text}"
+    return f"لیست کارهای امروز کاربر (متصل شده از سایت تقویم):\n{tasks_text}"
 
 def process_planner_action(supabase_user_id, planner_data, action, action_id, action_text):
     today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
@@ -156,10 +156,17 @@ def handle_voice(message):
         supabase_user_id, planner_data = get_user_planner_data(user_id)
         planner_context = generate_planner_prompt_context(planner_data)
 
-        system_prompt = f"""تو یک دستیار هوشمند هستی. زمان فعلی ایران: {current_time_iran}
-{f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
+        system_prompt = f"""تو هسته مرکزی هوش مصنوعی یک اپلیکیشن تقویم هستی.
+زمان فعلی ایران: {current_time_iran}
 
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای قبل یا بعد از آن ننویس.
+⚠️ قوانین بسیار مهم شخصیتی (هرگز تخطی نکن):
+۱. هرگز نگو "من به سایت دسترسی ندارم" یا "من نمیتوانم کارهای شما را تیک بزنم". تو مستقیماً از طریق API به پایگاه داده سایت متصل هستی.
+۲. کارهای امروز کاربر مستقیماً در زیر به تو داده شده است. فقط از روی آن‌ها به کاربر جواب بده و اگر کاری خواست، تغییرات را در قالب JSON به سرور اعلام کن.
+
+وضعیت اتصال کاربر:
+{f"✅ کاربر متصل است.\n{planner_context}" if planner_data else "❌ کاربر هنوز اکانت خود را متصل نکرده است. لطفا به او بگو که دستور /connect را بفرستد."}
+
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد. هیچ متنی قبل یا بعد از آکولادها ننویس.
 ساختار الزامی:
 {{
   "is_reminder": false, 
@@ -168,10 +175,10 @@ def handle_voice(message):
   "action": null,
   "action_id": null,
   "action_text": null,
-  "response": "پاسخ تو به کاربر"
+  "response": "پاسخ دوستانه تو به کاربر"
 }}
 
-- اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست پیدا کن.
+- اگر کاربر خواست تسکی را تیک بزند یا انجام دهد: action را "tick_todo" بگذار و ID آن کار را از لیست بالا پیدا کن و در action_id بنویس. در فیلد response هم بگو که کار با موفقیت در سایت تیک خورد.
 - اگر خواست کار جدیدی اضافه کند: action را "add_todo" بگذار و عنوان کار را در action_text بنویس.
 - پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
 """
@@ -180,7 +187,6 @@ def handle_voice(message):
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
         
-        # 🟢 حذف response_mime_type برای جلوگیری از ارور 400 گوگل
         config = types.GenerateContentConfig(tools=[{"google_search": {}}])
         
         bot_reply_text = None
@@ -200,7 +206,6 @@ def handle_voice(message):
             return
 
         try:
-            # 🟢 سیستم هوشمند استخراج JSON در صورت وجود مارک‌داون‌های اضافی
             clean_text = bot_reply_text.strip()
             match = re.search(r'\{[\s\S]*\}', clean_text)
             if match:
@@ -315,11 +320,17 @@ def handle_message(message):
         planner_context = generate_planner_prompt_context(planner_data)
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر تو {user_name} است.
+        sys_instruct = f"""تو هسته مرکزی هوش مصنوعی یک اپلیکیشن تقویم هستی. نام کاربر تو {user_name} است.
 زمان فعلی: {current_time_iran}
-{f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای ننویس.
+⚠️ قوانین بسیار مهم شخصیتی (هرگز تخطی نکن):
+۱. هرگز نگو "من به سایت دسترسی ندارم" یا "من نمیتوانم کارهای شما را تیک بزنم". تو مستقیماً از طریق کدهای بک‌اند به پایگاه داده سایت متصل هستی.
+۲. لیست کارهای کاربر مستقیماً در زیر به تو داده شده است. از روی آن‌ها بخوان و جواب بده.
+
+وضعیت اتصال کاربر:
+{f"✅ کاربر متصل است.\n{planner_context}" if planner_data else "❌ کاربر هنوز اکانت خود را متصل نکرده است. لطفا به او بگو که دستور /connect را بفرستد."}
+
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد. هیچ متنی خارج از JSON ننویس.
 ساختار الزامی:
 {{
   "action": null,
@@ -328,14 +339,13 @@ def handle_message(message):
   "response": "پاسخ کامل تو به کاربر"
 }}
 
-- اگر کاربر گفت کاری را انجام داده، action را "tick_todo" قرار بده و شناسه آن کار را از لیست بالا در action_id بگذار.
-- اگر خواست کار جدیدی اضافه کند: action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
+- اگر کاربر گفت کاری را انجام داده یا تیک بزن، action را "tick_todo" قرار بده و شناسه (ID) آن کار را از لیست بالا در action_id بگذار. در فیلد response هم تایید کن که کار با موفقیت در سایت تیک خورد.
+- اگر کاربر خواست کار جدیدی اضافه کند (مثلا: "خرید نان رو به لیست اضافه کن"): action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
 - جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
 """
         if saved_facts:
             sys_instruct += f"\n\n⚠️ اطلاعات دائم کاربر:\n- " + "\n- ".join(saved_facts)
 
-        # 🟢 حذف response_mime_type برای جلوگیری از ارور 400 گوگل
         config = types.GenerateContentConfig(
             system_instruction=sys_instruct, 
             tools=[{"google_search": {}}]
@@ -364,7 +374,6 @@ def handle_message(message):
             return
 
         try:
-            # 🟢 سیستم هوشمند استخراج JSON
             clean_text = bot_reply.strip()
             match = re.search(r'\{[\s\S]*\}', clean_text)
             if match:
