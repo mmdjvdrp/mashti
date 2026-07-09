@@ -11,8 +11,9 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# اضافه کردن ماژول جدید تقویم
+# اضافه کردن ماژول جدید تقویم (مطمئن شو فایل bot_planner_api.py کنار این فایل باشه)
 import bot_planner_api
+
 # ==========================================
 # ⚙️ خواندن متغیرهای محیطی
 # ==========================================
@@ -33,7 +34,7 @@ genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 IRAN_TZ = pytz.timezone('Asia/Tehran')
 
 # ==========================================
-# 🛠️ توابع کمکی و خودترمیم‌شونده
+# 🛠️ توابع کمکی
 # ==========================================
 def db_run(query):
     try:
@@ -52,13 +53,12 @@ def fa_to_en_digits(text):
     return text.translate(translation_table)
 
 # ==========================================
-# 🎤 پردازش فایل‌های صوتی و ویدیویی (متصل به سرچ و زمان)
+# 🎤 پردازش فایل‌های صوتی و ویدیویی
 # ==========================================
 @bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
     user_id = message.from_user.id
-    
-    status_msg = bot.reply_to(message, "🎤 در حال گوش دادن، جستجو و تحلیل صدای شما... ⏳")
+    status_msg = bot.reply_to(message, "🎤 در حال گوش دادن و تحلیل صدای شما... ⏳")
 
     try:
         mime_type = "audio/ogg"
@@ -74,96 +74,81 @@ def handle_voice(message):
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # محاسبه زمان زنده ایران
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        system_prompt = f"""تو یک دستیار هوشمند هستی. زمان و تاریخ فعلی در ایران (تهران): {current_time_iran}
-تو به اینترنت متصل هستی. در صورت نیاز به روزترین اطلاعات را حتماً جستجو کن.
+        # گرفتن اطلاعات تقویم برای پیام صوتی
+        supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
+        planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
 
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای قبل یا بعد از آن ننویس (حتی تگ‌های مارک‌داون مثل ```json را هم نگذار).
+        system_prompt = f"""تو یک دستیار هوشمند هستی. زمان فعلی ایران: {current_time_iran}
+{f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-اگر کاربر درخواست یادآوری (Reminder) داشت:
-- زمان باقی‌مانده تا آن ساعت را نسبت به زمان فعلیِ ایران محاسبه کن.
-- عدد محاسبه شده را به دقیقه تبدیل کن و در فیلد minutes قرار بده.
-- فرمت دقیق: {{"is_reminder": true, "minutes": تعداد_دقیقه, "message": "موضوع یادآوری", "response": "تاییدیه دوستانه"}}
+خروجی تو باید دقیقاً یک JSON معتبر باشد (بدون تگ مارک‌داون ```).
+ساختار الزامی:
+{{
+  "is_reminder": false, 
+  "minutes": 0,
+  "message": "",
+  "action": null,
+  "action_id": null,
+  "response": "پاسخ تو به کاربر"
+}}
 
-اگر کاربر سوالی پرسید یا حرف عادی زد:
-- فرمت دقیق: {{"is_reminder": false, "minutes": 0, "message": "", "response": "پاسخ کامل تو به کاربر بر اساس جستجوی وب یا دانشت"}}
+- اگر کاربر درخواست یادآوری داشت: is_reminder را true کن، زمان را در minutes بنویس و موضوع را در message.
+- اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست بالا پیدا کن.
+- پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
 """
         
         audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
         
-        # 🟢 حل مشکل تداخل: Mime-Type اجباری حذف شد تا جستجو بتواند کار کند
         config = types.GenerateContentConfig(
-            tools=[{"google_search": {}}]  # فقط ابزار سرچ فعال است
+            tools=[{"google_search": {}}],
+            response_mime_type="application/json"
         )
         
         bot_reply_text = None
-        last_error = "نامشخص"
         random.shuffle(genai_clients) 
-        
         for client in genai_clients:
             try:
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply_text = response.text
                 break
-            except Exception as e:
-                last_error = str(e) # ذخیره ارور برای نمایش به شما
+            except Exception:
                 continue
 
-        # اگر هیچ کلیدی کار نکرد، ارور دقیق به شما نمایش داده می‌شود
         if not bot_reply_text:
-            bot.edit_message_text(f"❌ ارتباط با سرور گوگل برقرار نشد.\nدلیل خطا:\n`{last_error}`", 
-                                  parse_mode="Markdown", chat_id=user_id, message_id=status_msg.message_id)
+            bot.edit_message_text("❌ ارتباط با سرور هوش مصنوعی برقرار نشد.", chat_id=user_id, message_id=status_msg.message_id)
             return
 
         try:
-            # 🟢 پاک‌سازی متن خروجی در صورتی که مدل مارک‌داون اضافی فرستاده باشد
-            clean_text = bot_reply_text.strip()
-            if "{" in clean_text and "}" in clean_text:
-                # پیدا کردن محدوده JSON برای جلوگیری از خطای پارس
-                match = re.search(r'\{.*\}', clean_text, re.DOTALL)
-                if match:
-                    clean_text = match.group(0)
+            result = json.loads(bot_reply_text.strip())
+            ai_response = result.get("response", "انجام شد.")
 
-            result = json.loads(clean_text)
+            # اعمال دستورات تقویم (تیک زدن تسک از طریق ویس)
+            action = result.get("action")
+            action_id = result.get("action_id")
+            if action and action_id and planner_data:
+                bot_planner_api.process_planner_action(supabase, supabase_user_id, planner_data, action, action_id)
             
+            # ثبت یادآور صوتی
             if result.get("is_reminder"):
-                minutes = int(result.get("minutes", 0))
-                if minutes < 0:
-                    minutes = 0 
-                    
+                minutes = max(int(result.get("minutes", 0)), 0)
                 reminder_text = result.get("message", "یادآوری")
-                ai_response = result.get("response", f"⏰ چشم، یادآور تنظیم شد.")
-                
                 send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-
                 db_run(supabase.table("scheduled_reminders").insert({
-                    "user_id": user_id,
-                    "message_text": reminder_text,
-                    "send_at": send_at.isoformat(),
-                    "is_sent": False
+                    "user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False
                 }))
 
-                bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
-                
-            else:
-                ai_response = result.get("response", "متوجه نشدم.")
-                
-                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": "[کاربر پیام صوتی ارسال کرد]" }))
-                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": ai_response}))
-                
-                bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
+            bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
                 
         except json.JSONDecodeError:
-            bot.edit_message_text("❌ خطا در تحلیل خروجی هوش مصنوعی. لطفاً دوباره تلاش کنید.", chat_id=user_id, message_id=status_msg.message_id)
-            # برای عیب‌یابی شما در محیط تست:
-            print("Failed to parse this response:", bot_reply_text)
+            bot.edit_message_text("❌ خطا در تحلیل خروجی هوش مصنوعی.", chat_id=user_id, message_id=status_msg.message_id)
 
     except Exception as e:
         bot.edit_message_text(f"❌ خطای سیستم: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
+
 # ==========================================
 # 🧠 منطق پیام‌های متنی (Text)
 # ==========================================
@@ -181,8 +166,8 @@ def handle_message(message):
         bot.send_chat_action(user_id, 'typing')
     except Exception:
         pass 
-        
-    # === ۱. دستور اتصال اکانت تقویم (نسخه اصلاح شده و ضدخطا) ===
+
+    # === ۱. دستور اتصال اکانت تقویم (کاملا ایزوله شده) ===
     if text_lower.startswith("/connect"):
         try:
             parts = text.split()
@@ -191,12 +176,24 @@ def handle_message(message):
                 success, msg = bot_planner_api.link_account(supabase, user_id, uuid_code)
                 bot.reply_to(message, msg)
             else:
-                bot.reply_to(message, "❌ لطفاً کد اتصال را همراه با دستور وارد کنید.\nمثال: `/connect 12345678-abcd-1234-abcd`", parse_mode="Markdown")
+                bot.reply_to(message, "❌ لطفاً کد اتصال را همراه با دستور وارد کنید.\nمثال: `/connect 12345678-abcd`", parse_mode="Markdown")
         except Exception as e:
             bot.reply_to(message, f"❌ خطایی در سیستم اتصال رخ داد: {str(e)}")
-        
-        # این return به شدت مهم است! باعث می‌شود دستور به Gemini نرود.
-        return
+        return # <--- این ریتورن باعث میشه هوش مصنوعی درگیر این پیام نشه!
+
+    try:
+        # 2. بخش گاوصندوق امنیتی
+        if text.startswith("/lock"):
+            try:
+                parts = text.split(" ", 3)
+                db_run(supabase.table("secure_vaults").insert({
+                    "user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]
+                }))
+                bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
+            except Exception:
+                bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
+            return 
+
         if text.startswith("/unlock"):
             try:
                 parts = text.split(" ", 2)
@@ -210,40 +207,25 @@ def handle_message(message):
                 bot.reply_to(message, "❌ فرمت اشتباه است: /unlock [اسم] [رمز]")
             return 
 
-        # 2. سیستم یادآور زمان‌بندی شده (فقط برای متن‌های مستقیم)
+        # 3. سیستم یادآور متنی
         text_normalized = fa_to_en_digits(text)
         pattern = r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$"
         match = re.search(pattern, text_normalized, re.IGNORECASE)
 
         if match:
-            try:
-                if match.group(1):  
-                    minutes = int(match.group(1))
-                    reminder_text = match.group(2)
-                else:  
-                    minutes = int(match.group(3))
-                    reminder_text = match.group(4)
+            if match.group(1):  
+                minutes, reminder_text = int(match.group(1)), match.group(2)
+            else:  
+                minutes, reminder_text = int(match.group(3)), match.group(4)
+            send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+            db_run(supabase.table("scheduled_reminders").insert({
+                "user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False
+            }))
+            bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم:\n\n«{reminder_text}»")
+            return
 
-                send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-
-                db_run(supabase.table("scheduled_reminders").insert({
-                    "user_id": user_id,
-                    "message_text": reminder_text,
-                    "send_at": send_at.isoformat(),
-                    "is_sent": False
-                }))
-
-                bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم:\n\n«{reminder_text}»")
-                return
-            except Exception:
-                bot.reply_to(message, "❌ خطایی در ثبت یادآور رخ داد.")
-                return
-
-        # 3. بخش چت، حافظه و اینترنت
-        is_save = False
-        if text_lower.endswith("save") or text_lower.endswith("ذخیره کن"):
-            is_save = True
-
+        # 4. بخش چت، حافظه و تقویم با هوش مصنوعی
+        is_save = text_lower.endswith("save") or text_lower.endswith("ذخیره کن")
         if is_save:
             db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": text}))
         else:
@@ -251,21 +233,40 @@ def handle_message(message):
 
         facts_res = db_run(supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact"))
         saved_facts = [row["content"] for row in facts_res.data]
-        
         history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10))
         chat_history = history_res.data[::-1]
+
+        # === خواندن اطلاعات تقویم کاربر ===
+        supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
+        planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
 
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر تو {user_name} است.
 زمان فعلی در ایران: {current_time_iran}
-1. تو به اینترنت متصل هستی. در صورت نیاز به روزترین اطلاعات را جستجو کن.
-2. صمیمی باش و از قوانین کاربر پیروی کن."""
-        if saved_facts:
-            facts_text = "\n- ".join(saved_facts)
-            sys_instruct += f"\n\n⚠️ قوانین و اطلاعات دائم کاربر (تکرارشان نکن مگر نیاز باشد):\n- {facts_text}"
+{f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-        config = types.GenerateContentConfig(system_instruction=sys_instruct, tools=[{"google_search": {}}])
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد.
+ساختار الزامی:
+{{
+  "action": null,
+  "action_id": null,
+  "response": "پاسخ کامل تو به کاربر"
+}}
+
+- اگر کاربر گفت کاری را انجام داده (مثلاً: "خرید رو تیک بزن")، شناسه آن تسک را از لیست پیدا کن، action را روی "tick_todo" قرار بده و شناسه را در action_id بگذار.
+- در غیر این صورت فیلدهای action و action_id را null بگذار.
+- جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
+"""
+        if saved_facts:
+            sys_instruct += f"\n\n⚠️ اطلاعات دائم کاربر:\n- " + "\n- ".join(saved_facts)
+
+        # 🟢 اجبار مدل به تولید فقط JSON
+        config = types.GenerateContentConfig(
+            system_instruction=sys_instruct, 
+            tools=[{"google_search": {}}],
+            response_mime_type="application/json"
+        )
 
         contents = []
         for row in chat_history:
@@ -275,39 +276,42 @@ def handle_message(message):
 
         bot_reply = None
         random.shuffle(genai_clients) 
-        
         for client in genai_clients:
             try:
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply = response.text
                 break
-            except Exception as e:
-                err_str = str(e).lower()
-                if "eof" in err_str or "disconnected" in err_str or "ssl" in err_str:
-                    try:
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-                        bot_reply = response.text
-                        break
-                    except:
-                        continue
-                elif "429" in err_str or "exhausted" in err_str:
-                    continue
-                else:
-                    raise e
+            except Exception:
+                continue
                     
         if not bot_reply:
-            bot_reply = "❌ تمام کلیدهای هوش مصنوعی مسدود شده‌اند یا گوگل در دسترس نیست. لطفاً کمی بعد تلاش کنید."
+            bot.reply_to(message, "❌ سیستم هوش مصنوعی پاسخگو نبود.")
+            return
 
-        if not is_save and bot_reply and not bot_reply.startswith("❌"):
-            db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": bot_reply}))
+        try:
+            result = json.loads(bot_reply.strip())
+            
+            # هندل کردن اکشن‌های تقویم
+            action = result.get("action")
+            action_id = result.get("action_id")
+            if action and action_id and planner_data:
+                bot_planner_api.process_planner_action(supabase, supabase_user_id, planner_data, action, action_id)
+            
+            ai_response = result.get("response", "پاسخی تولید نشد.")
+            
+            if not is_save:
+                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": ai_response}))
+                
+            bot.reply_to(message, ai_response)
 
-        bot.reply_to(message, bot_reply)
+        except json.JSONDecodeError:
+            bot.reply_to(message, "❌ خطا در پردازش پاسخ هوش مصنوعی.")
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
-# 🌐 تنظیمات Webhook و Cron برای Vercel
+# 🌐 تنظیمات Webhook و Cron
 # ==========================================
 @app.route('/', methods=['POST'])
 def webhook():
@@ -330,33 +334,20 @@ def webhook():
 @app.route('/cron/send-reminders', methods=['GET', 'POST'])
 def send_reminders():
     now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    
     try:
-        res = db_run(
-            supabase.table("scheduled_reminders")
-            .select("*")
-            .eq("is_sent", False)
-            .lte("send_at", now_utc)
-        )
-        
+        res = db_run(supabase.table("scheduled_reminders").select("*").eq("is_sent", False).lte("send_at", now_utc))
         sent_count = 0
         for row in res.data:
             try:
                 bot.send_message(row["user_id"], row["message_text"])
-                
-                db_run(
-                    supabase.table("scheduled_reminders")
-                    .update({"is_sent": True})
-                    .eq("id", row["id"])
-                )
+                db_run(supabase.table("scheduled_reminders").update({"is_sent": True}).eq("id", row["id"]))
                 sent_count += 1
-            except Exception as send_err:
+            except Exception:
                 pass
-                
         return jsonify({"status": "success", "processed": sent_count}), 200
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات مجهز به ساعت زنده ایران، سرچ گوگل و یادآور هوشمند صوتی است!"
+    return "✅ ربات مجهز به ساعت زنده ایران، سرچ گوگل، یادآور هوشمند و اتصال تقویم است!"
