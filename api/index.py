@@ -48,68 +48,64 @@ def fa_to_en_digits(text):
     return text.translate(translation_table)
 
 # ==========================================
-# 🎤 پردازش فایل‌های صوتی (Voice) 👈 بخش جدید
+# 🎤 پردازش فایل‌های صوتی و ویدیویی
 # ==========================================
-@bot.message_handler(content_types=['voice'])
+@bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
     user_id = message.from_user.id
     
-    try:
-        bot.send_chat_action(user_id, 'typing')
-    except Exception:
-        pass
+    # 🟢 ارسال پیام فوری برای اطمینان کاربر و جلوگیری از خطای Timeout در ذهن کاربر
+    status_msg = bot.reply_to(message, "🎤 در حال گوش دادن و تحلیل صدای شما... ⏳")
 
     try:
-        # 1. دانلود فایل صوتی از تلگرام به صورت بایت (بدون نیاز به ذخیره در هاست)
-        file_info = bot.get_file(message.voice.file_id)
+        # تشخیص نوع فایل و تنظیم فرمت برای جمینای
+        mime_type = "audio/ogg"
+        if message.content_type == 'voice':
+            file_id = message.voice.file_id
+        elif message.content_type == 'audio':
+            file_id = message.audio.file_id
+            mime_type = "audio/mpeg"  # فایل‌های صوتی عادی معمولا mp3 هستند
+        elif message.content_type == 'video_note':
+            file_id = message.video_note.file_id
+            mime_type = "video/mp4" # ویدیو مسیج‌های دایره‌ای تلگرام
+
+        # دانلود فایل در حافظه موقت (RAM)
+        file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # 2. آماده‌سازی پرامپت برای دریافت خروجی JSON از جمینای
-        system_prompt = """تو یک دستیار هوشمند هستی. به فایل صوتی کاربر گوش بده.
+        system_prompt = """تو یک دستیار هوشمند هستی. به این فایل صوتی/ویدیویی کاربر دقت کن.
 خروجی خود را فقط و فقط به عنوان یک آبجکت JSON معتبر برگردان.
 اگر کاربر درخواست یادآوری (Reminder) برای زمان خاصی داشت:
 {"is_reminder": true, "minutes": تعداد_دقیقه_به_صورت_عدد_صحیح, "message": "موضوع یادآوری خلاصه", "response": "تاییدیه دوستانه برای کاربر"}
 اگر کاربر صرفاً حرف معمولی زد یا سوالی پرسید:
 {"is_reminder": false, "minutes": 0, "message": "", "response": "پاسخ متنی و کامل تو به حرف کاربر"}
-توجه: زمان‌ها را به دقیقه تبدیل کن (مثلاً اگر گفت 2 ساعت دیگه، minutes را 120 قرار بده).
+توجه: زمان‌ها را به دقیقه تبدیل کن.
 """
         
-        # معرفی فایل صوتی به SDK جدید گوگل
-        audio_part = types.Part.from_bytes(data=downloaded_file, mime_type="audio/ogg")
+        # ترکیب فایل صوتی با متن
+        audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
         
-        # اجبار مدل به برگرداندن JSON
         config = types.GenerateContentConfig(response_mime_type="application/json")
         
-        # 3. ارسال به جمینای (با سیستم خودترمیم‌شونده)
         bot_reply_json = None
         random.shuffle(genai_clients) 
         
+        # ارتباط با جمینای
         for client in genai_clients:
             try:
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply_json = response.text
                 break
-            except Exception as e:
-                err_str = str(e).lower()
-                if "eof" in err_str or "disconnected" in err_str or "ssl" in err_str:
-                    try:
-                        response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-                        bot_reply_json = response.text
-                        break
-                    except:
-                        continue
-                elif "429" in err_str or "exhausted" in err_str:
-                    continue
-                else:
-                    raise e
+            except Exception:
+                continue # در صورت مسدود بودن کلید، کلید بعدی امتحان می‌شود
 
         if not bot_reply_json:
-            bot.reply_to(message, "❌ سرورهای هوش مصنوعی شلوغ هستند. لطفاً دوباره تلاش کنید.")
+            bot.edit_message_text("❌ متأسفانه ارتباط با سرور هوش مصنوعی برقرار نشد.", chat_id=user_id, message_id=status_msg.message_id)
             return
 
-        # 4. تحلیل خروجی JSON و اقدام
+        # 4. تحلیل خروجی JSON
         try:
             result = json.loads(bot_reply_json.strip())
             
@@ -127,22 +123,23 @@ def handle_voice(message):
                     "is_sent": False
                 }))
 
-                bot.reply_to(message, ai_response)
+                # ویرایش پیام قبلی با پاسخ موفقیت‌آمیز
+                bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
                 
             else:
                 ai_response = result.get("response", "متوجه نشدم.")
                 
-                # ذخیره در حافظه (ثبت اینکه کاربر ویس داده)
-                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": "[پیام صوتی]" }))
+                # ثبت در حافظه تا ربات بداند که کاربر پیام صوتی داده و او پاسخ داده است
+                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": "[کاربر پیام صوتی ارسال کرد]" }))
                 db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": ai_response}))
                 
-                bot.reply_to(message, ai_response)
+                bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
                 
         except json.JSONDecodeError:
-            bot.reply_to(message, "❌ خطا در درک پیام صوتی. لطفاً واضح‌تر بگویید.")
+            bot.edit_message_text("❌ خطا در درک پیام صوتی. لطفاً واضح‌تر بگویید.", chat_id=user_id, message_id=status_msg.message_id)
 
     except Exception as e:
-        bot.reply_to(message, f"❌ خطای سیستم صوتی: {str(e)}")
+        bot.edit_message_text(f"❌ خطای سیستم صوتی: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
 
 # ==========================================
 # 🧠 منطق پیام‌های متنی (Text)
