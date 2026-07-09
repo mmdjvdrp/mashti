@@ -72,59 +72,70 @@ def handle_voice(message):
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
         
-        # 🟢 محاسبه زمان زنده ایران برای ارسال به هوش مصنوعی
+        # محاسبه زمان زنده ایران
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         system_prompt = f"""تو یک دستیار هوشمند هستی. زمان و تاریخ فعلی در ایران (تهران): {current_time_iran}
-تو از طریق ابزارهایت به اینترنت (سایت‌های ایرانی و خارجی) متصل هستی. در صورت نیاز حتماً جستجو کن.
+تو به اینترنت متصل هستی. در صورت نیاز به روزترین اطلاعات را حتماً جستجو کن.
 
-خروجی خود را فقط و فقط به عنوان یک آبجکت JSON معتبر برگردان.
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای قبل یا بعد از آن ننویس (حتی تگ‌های مارک‌داون مثل ```json را هم نگذار).
+
 اگر کاربر درخواست یادآوری (Reminder) داشت:
-- چه زمان نسبی بود (مثلاً ۱۰ دقیقه دیگر) و چه زمان دقیق بود (مثلاً ساعت 1 بعد از ظهر یا 13:00)، تو باید محاسبه کنی که از زمان فعلیِ ایران تا آن ساعت، چند دقیقه باقی مانده است.
-- عدد محاسبه شده را در فیلد minutes قرار بده.
-- فرمت: {{"is_reminder": true, "minutes": تعداد_دقیقه_به_عدد, "message": "موضوع یادآوری", "response": "تاییدیه دوستانه تو"}}
+- زمان باقی‌مانده تا آن ساعت را نسبت به زمان فعلیِ ایران محاسبه کن.
+- عدد محاسبه شده را به دقیقه تبدیل کن و در فیلد minutes قرار بده.
+- فرمت دقیق: {{"is_reminder": true, "minutes": تعداد_دقیقه, "message": "موضوع یادآوری", "response": "تاییدیه دوستانه"}}
 
-اگر کاربر سوالی پرسید یا حرف عادی زد (نیاز به سرچ داشت یا نداشت):
-- فرمت: {{"is_reminder": false, "minutes": 0, "message": "", "response": "پاسخ متنی و کامل تو بر اساس دانش و جستجوی وب"}}
+اگر کاربر سوالی پرسید یا حرف عادی زد:
+- فرمت دقیق: {{"is_reminder": false, "minutes": 0, "message": "", "response": "پاسخ کامل تو به کاربر بر اساس جستجوی وب یا دانشت"}}
 """
         
         audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
         
-        # 🟢 فعال‌سازی ابزار جستجوی گوگل برای ویس!
+        # 🟢 حل مشکل تداخل: Mime-Type اجباری حذف شد تا جستجو بتواند کار کند
         config = types.GenerateContentConfig(
-            response_mime_type="application/json",
-            tools=[{"google_search": {}}]  # دسترسی به کل اینترنت
+            tools=[{"google_search": {}}]  # فقط ابزار سرچ فعال است
         )
         
-        bot_reply_json = None
+        bot_reply_text = None
+        last_error = "نامشخص"
         random.shuffle(genai_clients) 
         
         for client in genai_clients:
             try:
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-                bot_reply_json = response.text
+                bot_reply_text = response.text
                 break
-            except Exception:
+            except Exception as e:
+                last_error = str(e) # ذخیره ارور برای نمایش به شما
                 continue
 
-        if not bot_reply_json:
-            bot.edit_message_text("❌ متأسفانه ارتباط با سرور هوش مصنوعی برقرار نشد.", chat_id=user_id, message_id=status_msg.message_id)
+        # اگر هیچ کلیدی کار نکرد، ارور دقیق به شما نمایش داده می‌شود
+        if not bot_reply_text:
+            bot.edit_message_text(f"❌ ارتباط با سرور گوگل برقرار نشد.\nدلیل خطا:\n`{last_error}`", 
+                                  parse_mode="Markdown", chat_id=user_id, message_id=status_msg.message_id)
             return
 
         try:
-            result = json.loads(bot_reply_json.strip())
+            # 🟢 پاک‌سازی متن خروجی در صورتی که مدل مارک‌داون اضافی فرستاده باشد
+            clean_text = bot_reply_text.strip()
+            if "{" in clean_text and "}" in clean_text:
+                # پیدا کردن محدوده JSON برای جلوگیری از خطای پارس
+                match = re.search(r'\{.*\}', clean_text, re.DOTALL)
+                if match:
+                    clean_text = match.group(0)
+
+            result = json.loads(clean_text)
             
             if result.get("is_reminder"):
                 minutes = int(result.get("minutes", 0))
                 if minutes < 0:
-                    minutes = 0 # جلوگیری از زمان منفی در صورت اشتباه کاربر (مثلاً گفتن ساعت گذشته)
+                    minutes = 0 
                     
                 reminder_text = result.get("message", "یادآوری")
                 ai_response = result.get("response", f"⏰ چشم، یادآور تنظیم شد.")
                 
-                # تبدیل دقیقه‌ها به ساعت UTC برای دیتابیس شما
                 send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
 
                 db_run(supabase.table("scheduled_reminders").insert({
@@ -145,11 +156,12 @@ def handle_voice(message):
                 bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
                 
         except json.JSONDecodeError:
-            bot.edit_message_text("❌ خطا در درک پیام. لطفاً واضح‌تر بگویید.", chat_id=user_id, message_id=status_msg.message_id)
+            bot.edit_message_text("❌ خطا در تحلیل خروجی هوش مصنوعی. لطفاً دوباره تلاش کنید.", chat_id=user_id, message_id=status_msg.message_id)
+            # برای عیب‌یابی شما در محیط تست:
+            print("Failed to parse this response:", bot_reply_text)
 
     except Exception as e:
         bot.edit_message_text(f"❌ خطای سیستم: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
-
 # ==========================================
 # 🧠 منطق پیام‌های متنی (Text)
 # ==========================================
