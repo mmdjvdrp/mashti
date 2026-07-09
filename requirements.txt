@@ -1,6 +1,6 @@
-pyTelegramBotAPI
-supabase
-google-genai
-Flask
-python-dotenv
+pyTelegramBotAPI==4.14.0
+Flask==3.0.0
+supabase==2.3.4
+google-genai==0.3.0
 pytz
+python-dotenv
