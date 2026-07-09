@@ -9,26 +9,33 @@ import telebot
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from google import genai
-from google.genai import types
+from openai import OpenAI  # 🟢 تغییر به کتابخانه استاندارد OpenAI
 
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
+
+# 🟢 گرفتن کلیدهای سایت Conduit از متغیر Vercel
+# (همان کلیدهایی که با sk-cdt شروع می‌شوند را با ویرگول در GEMINI_API_KEY ورسل قرار بده)
 keys_string = os.environ.get("GEMINI_API_KEY", "")
-GEMINI_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
+CONDUIT_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
+
+# 🟢 آدرس دقیق API سایت Conduit
+AI_BASE_URL = "https://conduit.ozdoev.net/api/v1"
+
+# 🟢 مدلی که می‌خواهیم استفاده کنیم
+AI_MODEL = "gemini-2.5-flash" 
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False)
 app = Flask(__name__)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
-genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
 IRAN_TZ = pytz.timezone('Asia/Tehran')
 
 # ==========================================
-# 🗓️ توابع اتصال به تقویم و مدیریت Taskها
+# 🗓️ توابع اتصال به تقویم
 # ==========================================
 def link_account(telegram_id, user_uuid):
     try:
@@ -39,7 +46,7 @@ def link_account(telegram_id, user_uuid):
         data = res.data[0]['data']
         data['telegram_id'] = str(telegram_id)
         supabase.table("planner_data").update({"data": data}).eq("user_id", user_uuid).execute()
-        return True, "✅ حساب وب شما با موفقیت به ربات تلگرام متصل شد! \n\nحالا می‌توانید بگویید: «امروز چه کارهایی دارم؟» یا «تسک ورزش رو تیک بزن»."
+        return True, "✅ حساب وب شما با موفقیت به ربات تلگرام متصل شد!"
     except Exception as e:
         return False, f"❌ خطا در ارتباط با دیتابیس: {str(e)}"
 
@@ -55,26 +62,17 @@ def get_user_planner_data(telegram_id):
 def generate_planner_prompt_context(planner_data):
     if not planner_data:
         return ""
-    
     today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
     todos = planner_data.get("todos", [])
     today_todos = [t for t in todos if t.get("date") == today or t.get("isDaily")]
-    
     if not today_todos:
         return "کاربر هیچ کار (To-Do) ثبت شده‌ای برای امروز ندارد."
-
     tasks_text = ""
     for t in today_todos:
-        if t.get("isDaily"):
-            done_dates = t.get("doneDates", {})
-            is_done = done_dates.get(today, False)
-        else:
-            is_done = t.get("done", False)
-            
+        is_done = t.get("doneDates", {}).get(today, False) if t.get("isDaily") else t.get("done", False)
         status = "انجام شده" if is_done else "در انتظار انجام"
         tasks_text += f"- ID: {t['id']} | عنوان: {t['title']} | وضعیت: {status}\n"
-        
-    return f"لیست کارهای امروز کاربر (متصل شده از سایت تقویم):\n{tasks_text}"
+    return f"لیست کارهای امروز کاربر:\n{tasks_text}"
 
 def process_planner_action(supabase_user_id, planner_data, action, action_id, action_text):
     today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
@@ -94,15 +92,10 @@ def process_planner_action(supabase_user_id, planner_data, action, action_id, ac
                 break
                 
     elif action == "add_todo" and action_text:
-        new_todo = {
-            "id": "t" + str(int(time.time() * 1000)),
-            "title": action_text,
-            "date": today,
-            "done": False,
-            "isDaily": False,
-            "doneDates": {}
-        }
-        todos.append(new_todo)
+        todos.append({
+            "id": "t" + str(int(time.time() * 1000)), "title": action_text,
+            "date": today, "done": False, "isDaily": False, "doneDates": {}
+        })
         planner_data["todos"] = todos
         updated = True
     
@@ -111,131 +104,25 @@ def process_planner_action(supabase_user_id, planner_data, action, action_id, ac
         return True
     return False
 
-# ==========================================
-# 🛠️ توابع کمکی ربات
-# ==========================================
 def db_run(query):
     try:
         return query.execute()
     except Exception as e:
-        err = str(e).lower()
-        if "eof" in err or "disconnected" in err or "ssl" in err or "protocol" in err:
+        if any(x in str(e).lower() for x in ["eof", "disconnected", "ssl", "protocol"]):
             return query.execute()
         raise e
 
 def fa_to_en_digits(text):
-    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
-    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
-    english_digits = "0123456789"
-    translation_table = str.maketrans(persian_digits + arabic_digits, english_digits + english_digits)
-    return text.translate(translation_table)
+    trans = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+    return text.translate(trans)
 
 # ==========================================
 # 🎤 پردازش فایل‌های صوتی
 # ==========================================
 @bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
-    user_id = message.from_user.id
-    status_msg = bot.reply_to(message, "🎤 در حال گوش دادن و تحلیل صدای شما... ⏳")
-
-    try:
-        mime_type = "audio/ogg"
-        if message.content_type == 'voice':
-            file_id = message.voice.file_id
-        elif message.content_type == 'audio':
-            file_id = message.audio.file_id
-            mime_type = "audio/mpeg"
-        elif message.content_type == 'video_note':
-            file_id = message.video_note.file_id
-            mime_type = "video/mp4"
-
-        file_info = bot.get_file(file_id)
-        downloaded_file = bot.download_file(file_info.file_path)
-        current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
-
-        supabase_user_id, planner_data = get_user_planner_data(user_id)
-        planner_context = generate_planner_prompt_context(planner_data)
-
-        system_prompt = f"""تو هسته مرکزی هوش مصنوعی یک اپلیکیشن تقویم هستی.
-زمان فعلی ایران: {current_time_iran}
-
-⚠️ قوانین بسیار مهم شخصیتی (هرگز تخطی نکن):
-۱. هرگز نگو "من به سایت دسترسی ندارم" یا "من نمیتوانم کارهای شما را تیک بزنم". تو مستقیماً از طریق API به پایگاه داده سایت متصل هستی.
-۲. کارهای امروز کاربر مستقیماً در زیر به تو داده شده است. فقط از روی آن‌ها به کاربر جواب بده و اگر کاری خواست، تغییرات را در قالب JSON به سرور اعلام کن.
-
-وضعیت اتصال کاربر:
-{f"✅ کاربر متصل است.\n{planner_context}" if planner_data else "❌ کاربر هنوز اکانت خود را متصل نکرده است. لطفا به او بگو که دستور /connect را بفرستد."}
-
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد. هیچ متنی قبل یا بعد از آکولادها ننویس.
-ساختار الزامی:
-{{
-  "is_reminder": false, 
-  "minutes": 0,
-  "message": "",
-  "action": null,
-  "action_id": null,
-  "action_text": null,
-  "response": "پاسخ دوستانه تو به کاربر"
-}}
-
-- اگر کاربر خواست تسکی را تیک بزند یا انجام دهد: action را "tick_todo" بگذار و ID آن کار را از لیست بالا پیدا کن و در action_id بنویس. در فیلد response هم بگو که کار با موفقیت در سایت تیک خورد.
-- اگر خواست کار جدیدی اضافه کند: action را "add_todo" بگذار و عنوان کار را در action_text بنویس.
-- پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
-"""
-        
-        audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
-        text_part = types.Part.from_text(text=system_prompt)
-        contents = [types.Content(role="user", parts=[audio_part, text_part])]
-        
-        config = types.GenerateContentConfig(tools=[{"google_search": {}}])
-        
-        bot_reply_text = None
-        last_error = ""
-        random.shuffle(genai_clients) 
-        for client in genai_clients:
-            try:
-                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-                bot_reply_text = response.text
-                break
-            except Exception as e:
-                last_error = str(e)
-                continue
-
-        if not bot_reply_text:
-            bot.edit_message_text(f"❌ ارتباط با سرور هوش مصنوعی برقرار نشد.\n\nجزئیات خطا:\n`{last_error}`", chat_id=user_id, message_id=status_msg.message_id, parse_mode="Markdown")
-            return
-
-        try:
-            clean_text = bot_reply_text.strip()
-            match = re.search(r'\{[\s\S]*\}', clean_text)
-            if match:
-                clean_text = match.group(0)
-                
-            result = json.loads(clean_text)
-            ai_response = result.get("response", "انجام شد.")
-
-            action = result.get("action")
-            action_id = result.get("action_id")
-            action_text = result.get("action_text")
-            
-            if action and planner_data:
-                process_planner_action(supabase_user_id, planner_data, action, action_id, action_text)
-            
-            if result.get("is_reminder"):
-                minutes = max(int(result.get("minutes", 0)), 0)
-                reminder_text = result.get("message", "یادآوری")
-                send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-                db_run(supabase.table("scheduled_reminders").insert({
-                    "user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False
-                }))
-
-            bot.edit_message_text(ai_response, chat_id=user_id, message_id=status_msg.message_id)
-                
-        except json.JSONDecodeError:
-            bot.edit_message_text("❌ خطا در تحلیل خروجی هوش مصنوعی.", chat_id=user_id, message_id=status_msg.message_id)
-
-    except Exception as e:
-        bot.edit_message_text(f"❌ خطای سیستم: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
+    # سایت Conduit از دریافت مستقیم فایل صوتی پشتیبانی نمی‌کند
+    bot.reply_to(message, "🎤 به دلیل استفاده از سرور واسطه Conduit، فعلاً پردازش مستقیم فایل صوتی غیرفعال است. لطفاً درخواست خود را تایپ کنید! ⌨️")
 
 # ==========================================
 # 🧠 پردازش پیام‌های متنی
@@ -249,15 +136,15 @@ def handle_message(message):
     if not text:
         return
 
+    # دستور اتصال
     if text.lower().startswith("/connect"):
         try:
             parts = text.split()
             if len(parts) >= 2:
-                uuid_code = parts[1].strip()
-                success, msg = link_account(user_id, uuid_code)
+                success, msg = link_account(user_id, parts[1].strip())
                 bot.reply_to(message, msg)
             else:
-                bot.reply_to(message, "❌ کد اتصال یافت نشد. لطفاً کد را از سایت کپی کنید.")
+                bot.reply_to(message, "❌ کد اتصال یافت نشد.")
         except Exception as e:
             bot.reply_to(message, f"❌ خطا: {str(e)}")
         return 
@@ -269,40 +156,29 @@ def handle_message(message):
 
     try:
         text_lower = text.lower()
+        
+        # گاوصندوق
         if text.startswith("/lock"):
-            try:
-                parts = text.split(" ", 3)
-                db_run(supabase.table("secure_vaults").insert({"user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]}))
-                bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
-            except:
-                bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
+            parts = text.split(" ", 3)
+            db_run(supabase.table("secure_vaults").insert({"user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]}))
+            bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
             return 
-
         if text.startswith("/unlock"):
-            try:
-                parts = text.split(" ", 2)
-                res = db_run(supabase.table("secure_vaults").select("content").eq("user_id", user_id).eq("box_name", parts[1]).eq("password", parts[2]))
-                if res.data:
-                    box_contents = "\n- ".join([row["content"] for row in res.data])
-                    bot.reply_to(message, f"🔓 اطلاعات جعبه:\n\n- {box_contents}")
-                else:
-                    bot.reply_to(message, "❌ جعبه پیدا نشد یا رمز اشتباه است!")
-            except:
-                bot.reply_to(message, "❌ فرمت اشتباه است: /unlock [اسم] [رمز]")
+            parts = text.split(" ", 2)
+            res = db_run(supabase.table("secure_vaults").select("content").eq("user_id", user_id).eq("box_name", parts[1]).eq("password", parts[2]))
+            if res.data:
+                bot.reply_to(message, f"🔓 اطلاعات جعبه:\n\n- " + "\n- ".join([r["content"] for r in res.data]))
+            else:
+                bot.reply_to(message, "❌ جعبه پیدا نشد یا رمز اشتباه است!")
             return 
 
-        text_normalized = fa_to_en_digits(text)
-        pattern = r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$"
-        match = re.search(pattern, text_normalized, re.IGNORECASE)
-
+        # یادآور متنی
+        match = re.search(r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$", fa_to_en_digits(text), re.IGNORECASE)
         if match:
-            if match.group(1):  
-                minutes, reminder_text = int(match.group(1)), match.group(2)
-            else:  
-                minutes, reminder_text = int(match.group(3)), match.group(4)
+            minutes, reminder_text = (int(match.group(1)), match.group(2)) if match.group(1) else (int(match.group(3)), match.group(4))
             send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
             db_run(supabase.table("scheduled_reminders").insert({"user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False}))
-            bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم:\n\n«{reminder_text}»")
+            bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم.")
             return
 
         is_save = text_lower.endswith("save") or text_lower.endswith("ذخیره کن")
@@ -312,97 +188,87 @@ def handle_message(message):
             db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": text}))
 
         facts_res = db_run(supabase.table("chat_memory").select("content").eq("user_id", user_id).eq("role", "fact"))
-        saved_facts = [row["content"] for row in facts_res.data]
-        history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10))
+        saved_facts = [r["content"] for r in facts_res.data]
+        history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(8))
         chat_history = history_res.data[::-1]
 
         supabase_user_id, planner_data = get_user_planner_data(user_id)
         planner_context = generate_planner_prompt_context(planner_data)
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        sys_instruct = f"""تو هسته مرکزی هوش مصنوعی یک اپلیکیشن تقویم هستی. نام کاربر تو {user_name} است.
-زمان فعلی: {current_time_iran}
+        sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر: {user_name}. زمان: {current_time_iran}
 
-⚠️ قوانین بسیار مهم شخصیتی (هرگز تخطی نکن):
-۱. هرگز نگو "من به سایت دسترسی ندارم" یا "من نمیتوانم کارهای شما را تیک بزنم". تو مستقیماً از طریق کدهای بک‌اند به پایگاه داده سایت متصل هستی.
-۲. لیست کارهای کاربر مستقیماً در زیر به تو داده شده است. از روی آن‌ها بخوان و جواب بده.
+⚠️ تو مستقیماً به پایگاه داده تقویم متصل هستی.
+{f"✅ وضعیت: کاربر متصل است.\n{planner_context}" if planner_data else "❌ وضعیت: کاربر متصل نیست."}
 
-وضعیت اتصال کاربر:
-{f"✅ کاربر متصل است.\n{planner_context}" if planner_data else "❌ کاربر هنوز اکانت خود را متصل نکرده است. لطفا به او بگو که دستور /connect را بفرستد."}
-
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد. هیچ متنی خارج از JSON ننویس.
-ساختار الزامی:
+خروجی تو باید دقیقاً و فقط یک آبجکت JSON باشد. هیچ متنی خارج از JSON ننویس.
 {{
   "action": null,
   "action_id": null,
   "action_text": null,
-  "response": "پاسخ کامل تو به کاربر"
+  "response": "پاسخ دوستانه تو به کاربر"
 }}
 
-- اگر کاربر گفت کاری را انجام داده یا تیک بزن، action را "tick_todo" قرار بده و شناسه (ID) آن کار را از لیست بالا در action_id بگذار. در فیلد response هم تایید کن که کار با موفقیت در سایت تیک خورد.
-- اگر کاربر خواست کار جدیدی اضافه کند (مثلا: "خرید نان رو به لیست اضافه کن"): action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
-- جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
+- تیک زدن تسک: action="tick_todo" و action_id=شناسه تسک.
+- اضافه کردن تسک: action="add_todo" و action_text=عنوان کار.
 """
         if saved_facts:
-            sys_instruct += f"\n\n⚠️ اطلاعات دائم کاربر:\n- " + "\n- ".join(saved_facts)
+            sys_instruct += f"\n\n⚠️ قوانین کاربر:\n- " + "\n- ".join(saved_facts)
 
-        config = types.GenerateContentConfig(
-            system_instruction=sys_instruct, 
-            tools=[{"google_search": {}}]
-        )
-
-        contents = []
+        # 🟢 ساختار پیام‌ها با استاندارد OpenAI / Conduit
+        messages = [{"role": "system", "content": sys_instruct}]
         for row in chat_history:
-            contents.append(types.Content(role=row["role"], parts=[types.Part.from_text(text=row["content"])]))
+            role = "user" if row["role"] == "user" else "assistant"
+            messages.append({"role": role, "content": row["content"]})
         if is_save:
-            contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
+            messages.append({"role": "user", "content": text})
 
         bot_reply = None
-        last_error = ""
-        random.shuffle(genai_clients) 
-        for client in genai_clients:
+        last_error = "کلید API یافت نشد."
+        
+        # 🟢 سیستم چرخشی هوشمند برای کلیدهای سایت Conduit
+        random.shuffle(CONDUIT_KEYS)
+        for api_key in CONDUIT_KEYS:
+            if not api_key: continue
             try:
-                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
-                bot_reply = response.text
+                ai_client = OpenAI(api_key=api_key, base_url=AI_BASE_URL)
+                response = ai_client.chat.completions.create(
+                    model=AI_MODEL,
+                    messages=messages,
+                )
+                bot_reply = response.choices[0].message.content
                 break
             except Exception as e:
                 last_error = str(e)
                 continue
-                    
+
         if not bot_reply:
-            bot.reply_to(message, f"❌ سیستم هوش مصنوعی پاسخگو نبود.\n\nجزئیات خطا:\n`{last_error}`", parse_mode="Markdown")
+            bot.reply_to(message, f"❌ خطا از سمت سرور Conduit:\n`{last_error}`\nمطمئن شوید کلیدهای این سایت را در متغیر Vercel قرار داده‌اید.", parse_mode="Markdown")
             return
 
         try:
             clean_text = bot_reply.strip()
             match = re.search(r'\{[\s\S]*\}', clean_text)
-            if match:
-                clean_text = match.group(0)
-                
+            if match: clean_text = match.group(0)
             result = json.loads(clean_text)
             
             action = result.get("action")
-            action_id = result.get("action_id")
-            action_text = result.get("action_text")
-            
             if action and planner_data:
-                process_planner_action(supabase_user_id, planner_data, action, action_id, action_text)
+                process_planner_action(supabase_user_id, planner_data, action, result.get("action_id"), result.get("action_text"))
             
-            ai_response = result.get("response", "پاسخی تولید نشد.")
-            
+            ai_response = result.get("response", "انجام شد.")
             if not is_save:
                 db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": ai_response}))
-                
             bot.reply_to(message, ai_response)
 
         except json.JSONDecodeError:
-            bot.reply_to(message, "❌ خطا در پردازش پاسخ هوش مصنوعی.")
+            bot.reply_to(message, "❌ خطا در پردازش پاسخ سایت Conduit. (احتمالاً فرمت خروجی به هم ریخته است)")
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
-# 🌐 سیستم مسیردهی پیشرفته برای Vercel
+# 🌐 سیستم مسیردهی برای Vercel
 # ==========================================
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
 @app.route('/<path:path>', methods=['GET', 'POST'])
@@ -417,7 +283,7 @@ def catch_all(path):
                     bot.send_message(row["user_id"], row["message_text"])
                     db_run(supabase.table("scheduled_reminders").update({"is_sent": True}).eq("id", row["id"]))
                     sent_count += 1
-                except Exception:
+                except:
                     pass
             return jsonify({"status": "success", "processed": sent_count}), 200
         except Exception as e:
@@ -429,11 +295,10 @@ def catch_all(path):
             update = telebot.types.Update.de_json(json_string)
             try:
                 supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
-            except Exception as e:
-                if "duplicate" in str(e) or "23505" in str(e):
-                    return jsonify({"status": "already processed"}), 200
+            except:
+                return jsonify({"status": "already processed"}), 200
             bot.process_new_updates([update])
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "error"}), 403
 
-    return "✅ سرور پایتون نصب شد و ربات در حال کار است!"
+    return "✅ سرور پایتون متصل به سایت Conduit نصب شد!"
