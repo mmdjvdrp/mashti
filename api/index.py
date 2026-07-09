@@ -1,7 +1,8 @@
 import os
-import telebot
+import re
 import datetime
 import random
+import telebot
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from supabase import create_client, Client
@@ -25,7 +26,7 @@ supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
 # ==========================================
-# 🛠️ سیستم خودترمیم‌شونده برای سوپابیس
+# 🛠️ توابع کمکی و خودترمیم‌شونده
 # ==========================================
 def db_run(query):
     """اگر کانکشن دیتابیس خواب رفته بود، یک بار خطا رو نادیده می‌گیره و با کانکشن جدید دوباره تلاش می‌کنه"""
@@ -36,6 +37,14 @@ def db_run(query):
         if "eof" in err or "disconnected" in err or "ssl" in err or "protocol" in err:
             return query.execute() # تلاش مجدد با سوکتِ تازه
         raise e
+
+def fa_to_en_digits(text):
+    """تبدیل اعداد فارسی و عربی به انگلیسی برای پردازش دقیق‌تر دقیقه‌ها"""
+    persian_digits = "۰۱۲۳۴۵۶۷۸۹"
+    arabic_digits = "٠١٢٣٤٥٦٧٨٩"
+    english_digits = "0123456789"
+    translation_table = str.maketrans(persian_digits + arabic_digits, english_digits + english_digits)
+    return text.translate(translation_table)
 
 # ==========================================
 # 🧠 منطق اصلی ربات
@@ -50,7 +59,7 @@ def handle_message(message):
     if not text:
         return
 
-    # حل مشکل قطعی سوکت تلگرام: اگر ارور داد نادیده می‌گیریم تا کانکشن تلگرام ریست بشه
+    # حل مشکل قطعی سوکت تلگرام
     try:
         bot.send_chat_action(user_id, 'typing')
     except Exception:
@@ -82,7 +91,38 @@ def handle_message(message):
                 bot.reply_to(message, "❌ فرمت اشتباه است: /unlock [اسم] [رمز]")
             return 
 
-        # 2. بخش چت، حافظه و اینترنت
+        # 2. سیستم یادآور زمان‌بندی شده (هم عامیانه هم با دستور)
+        text_normalized = fa_to_en_digits(text)
+        
+        # پشتیبانی از: "/remind 5 سلام" یا "۵ دقیقه دیگه بگو سلام" یا "۱۰ دقیقه بعد پیام بده فلان"
+        pattern = r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$"
+        match = re.search(pattern, text_normalized, re.IGNORECASE)
+
+        if match:
+            try:
+                if match.group(1):  # فرمت دستوری /remind
+                    minutes = int(match.group(1))
+                    reminder_text = match.group(2)
+                else:  # فرمت عامیانه فارسی
+                    minutes = int(match.group(3))
+                    reminder_text = match.group(4)
+
+                send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+
+                db_run(supabase.table("scheduled_reminders").insert({
+                    "user_id": user_id,
+                    "message_text": reminder_text,
+                    "send_at": send_at.isoformat(),
+                    "is_sent": False
+                }))
+
+                bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم:\n\n«{reminder_text}»")
+                return
+            except Exception:
+                bot.reply_to(message, "❌ خطایی در ثبت یادآور رخ داد.")
+                return
+
+        # 3. بخش چت، حافظه و اینترنت
         is_save = False
         if text_lower.endswith("save") or text_lower.endswith("ذخیره کن"):
             is_save = True
@@ -113,7 +153,7 @@ def handle_message(message):
         if is_save:
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-        # 3. ارتباط با جمنای (با سیستم خودترمیم‌شونده قطعی سرور)
+        # 4. ارتباط با جمنای (با سیستم خودترمیم‌شونده قطعی سرور)
         bot_reply = None
         random.shuffle(genai_clients) 
         
@@ -124,16 +164,15 @@ def handle_message(message):
                 break
             except Exception as e:
                 err_str = str(e).lower()
-                # اگر گوگل کانکشن رو بسته بود، یک بار دیگه سریع با همون کلید تلاش کن
                 if "eof" in err_str or "disconnected" in err_str or "ssl" in err_str:
                     try:
                         response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                         bot_reply = response.text
                         break
                     except:
-                        continue # اگر بازم نشد برو کلید بعدی
+                        continue
                 elif "429" in err_str or "exhausted" in err_str:
-                    continue # لیمیت شده، برو کلید بعدی
+                    continue
                 else:
                     raise e
                     
@@ -149,7 +188,7 @@ def handle_message(message):
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
-# 🌐 تنظیمات Webhook برای Vercel
+# 🌐 تنظیمات Webhook و Cron برای Vercel
 # ==========================================
 
 @app.route('/', methods=['POST'])
@@ -160,23 +199,52 @@ def webhook():
         
         # 🟢 قفل کردن همزمانی با دیتابیس Supabase 🟢
         try:
-            # تلاش برای ثبت آیدی پیام در دیتابیس مشترک
             supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
         except Exception as e:
             err_msg = str(e)
-            # اگر آیدی قبلاً ثبت شده بود (ارور duplicate)، یعنی پیام تکراریه و بلافاصله متوقفش کن
             if "duplicate" in err_msg or "23505" in err_msg:
                 return jsonify({"status": "already processed"}), 200
-            
-            # اگر خطای دیگه‌ای بود (مثلاً جدول هنوز ساخته نشده)، اجازه بده ربات کارش رو بکنه تا قطع نشه
             print(f"Deduplication bypass: {err_msg}")
-        # --------------------------------------------
         
         bot.process_new_updates([update])
         return jsonify({"status": "ok"}), 200
         
     return jsonify({"status": "error"}), 403
 
+@app.route('/cron/send-reminders', methods=['GET', 'POST'])
+def send_reminders():
+    """ارسال یک‌بارهٔ پیام‌های زمان‌بندی‌شده‌ای که زمانشان فرا رسیده است"""
+    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    
+    try:
+        # دریافت پیام‌های ارسال‌نشده‌ای که زمانشان رسیده یا گذشته است
+        res = db_run(
+            supabase.table("scheduled_reminders")
+            .select("*")
+            .eq("is_sent", False)
+            .lte("send_at", now_utc)
+        )
+        
+        sent_count = 0
+        for row in res.data:
+            try:
+                # ارسال پیام یک‌باره به کاربر در تلگرام
+                bot.send_message(row["user_id"], row["message_text"])
+                
+                # ثبت ارسال شدن پیام در دیتابیس تا دوباره ارسال نشود
+                db_run(
+                    supabase.table("scheduled_reminders")
+                    .update({"is_sent": True})
+                    .eq("id", row["id"])
+                )
+                sent_count += 1
+            except Exception as send_err:
+                print(f"Error sending to {row['user_id']}: {send_err}")
+                
+        return jsonify({"status": "success", "processed": sent_count}), 200
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
+
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات بدون مشکل، با سیستم خودترمیم‌شونده و قفل دیتابیس روی Vercel فعال است!"
+    return "✅ ربات بدون مشکل، با سیستم خودترمیم‌شونده، یادآور هوشمند و قفل دیتابیس فعال است!"
