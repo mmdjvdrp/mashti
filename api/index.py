@@ -81,7 +81,6 @@ def process_planner_action(supabase_user_id, planner_data, action, action_id, ac
     todos = planner_data.get("todos", [])
     updated = False
     
-    # 1. تیک زدن کار موجود
     if action == "tick_todo" and action_id:
         for t in todos:
             if t['id'] == action_id:
@@ -94,7 +93,6 @@ def process_planner_action(supabase_user_id, planner_data, action, action_id, ac
                 updated = True
                 break
                 
-    # 2. اضافه کردن کار جدید
     elif action == "add_todo" and action_text:
         new_todo = {
             "id": "t" + str(int(time.time() * 1000)),
@@ -161,7 +159,7 @@ def handle_voice(message):
         system_prompt = f"""تو یک دستیار هوشمند هستی. زمان فعلی ایران: {current_time_iran}
 {f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-خروجی تو باید دقیقاً یک JSON معتبر باشد.
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای قبل یا بعد از آن ننویس.
 ساختار الزامی:
 {{
   "is_reminder": false, 
@@ -173,7 +171,7 @@ def handle_voice(message):
   "response": "پاسخ تو به کاربر"
 }}
 
-- اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست بالا پیدا کن.
+- اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست پیدا کن.
 - اگر خواست کار جدیدی اضافه کند: action را "add_todo" بگذار و عنوان کار را در action_text بنویس.
 - پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
 """
@@ -181,14 +179,15 @@ def handle_voice(message):
         audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
-        config = types.GenerateContentConfig(tools=[{"google_search": {}}], response_mime_type="application/json")
+        
+        # 🟢 حذف response_mime_type برای جلوگیری از ارور 400 گوگل
+        config = types.GenerateContentConfig(tools=[{"google_search": {}}])
         
         bot_reply_text = None
         last_error = ""
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                # اینجا به 2.5 فلش تغییر کرد
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply_text = response.text
                 break
@@ -201,7 +200,13 @@ def handle_voice(message):
             return
 
         try:
-            result = json.loads(bot_reply_text.strip())
+            # 🟢 سیستم هوشمند استخراج JSON در صورت وجود مارک‌داون‌های اضافی
+            clean_text = bot_reply_text.strip()
+            match = re.search(r'\{[\s\S]*\}', clean_text)
+            if match:
+                clean_text = match.group(0)
+                
+            result = json.loads(clean_text)
             ai_response = result.get("response", "انجام شد.")
 
             action = result.get("action")
@@ -239,7 +244,6 @@ def handle_message(message):
     if not text:
         return
 
-    # 🔴 دستور اتصال
     if text.lower().startswith("/connect"):
         try:
             parts = text.split()
@@ -315,7 +319,7 @@ def handle_message(message):
 زمان فعلی: {current_time_iran}
 {f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد.
+توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد و هیچ متن اضافه‌ای ننویس.
 ساختار الزامی:
 {{
   "action": null,
@@ -325,16 +329,16 @@ def handle_message(message):
 }}
 
 - اگر کاربر گفت کاری را انجام داده، action را "tick_todo" قرار بده و شناسه آن کار را از لیست بالا در action_id بگذار.
-- اگر کاربر خواست کار جدیدی اضافه کند (مثلا: "خرید نان رو به لیست اضافه کن"): action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
+- اگر خواست کار جدیدی اضافه کند: action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
 - جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
 """
         if saved_facts:
             sys_instruct += f"\n\n⚠️ اطلاعات دائم کاربر:\n- " + "\n- ".join(saved_facts)
 
+        # 🟢 حذف response_mime_type برای جلوگیری از ارور 400 گوگل
         config = types.GenerateContentConfig(
             system_instruction=sys_instruct, 
-            tools=[{"google_search": {}}],
-            response_mime_type="application/json"
+            tools=[{"google_search": {}}]
         )
 
         contents = []
@@ -348,7 +352,6 @@ def handle_message(message):
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                # اینجا به 2.5 فلش تغییر کرد
                 response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply = response.text
                 break
@@ -361,7 +364,13 @@ def handle_message(message):
             return
 
         try:
-            result = json.loads(bot_reply.strip())
+            # 🟢 سیستم هوشمند استخراج JSON
+            clean_text = bot_reply.strip()
+            match = re.search(r'\{[\s\S]*\}', clean_text)
+            if match:
+                clean_text = match.group(0)
+                
+            result = json.loads(clean_text)
             
             action = result.get("action")
             action_id = result.get("action_id")
@@ -384,7 +393,7 @@ def handle_message(message):
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
-# 🌐 سیستم مسیردهی پیشرفته و ضد ارور برای Vercel
+# 🌐 سیستم مسیردهی پیشرفته برای Vercel
 # ==========================================
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
 @app.route('/<path:path>', methods=['GET', 'POST'])
@@ -418,4 +427,4 @@ def catch_all(path):
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "error"}), 403
 
-    return "✅ سرور پایتون به صورت یکپارچه نصب شد و ربات در حال کار است!"
+    return "✅ سرور پایتون نصب شد و ربات در حال کار است!"
