@@ -2,6 +2,7 @@ import os
 import re
 import datetime
 import random
+import json  # 👈 ماژول جیسون اضافه شد
 import telebot
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
@@ -47,7 +48,104 @@ def fa_to_en_digits(text):
     return text.translate(translation_table)
 
 # ==========================================
-# 🧠 منطق اصلی ربات
+# 🎤 پردازش فایل‌های صوتی (Voice) 👈 بخش جدید
+# ==========================================
+@bot.message_handler(content_types=['voice'])
+def handle_voice(message):
+    user_id = message.from_user.id
+    
+    try:
+        bot.send_chat_action(user_id, 'typing')
+    except Exception:
+        pass
+
+    try:
+        # 1. دانلود فایل صوتی از تلگرام به صورت بایت (بدون نیاز به ذخیره در هاست)
+        file_info = bot.get_file(message.voice.file_id)
+        downloaded_file = bot.download_file(file_info.file_path)
+        
+        # 2. آماده‌سازی پرامپت برای دریافت خروجی JSON از جمینای
+        system_prompt = """تو یک دستیار هوشمند هستی. به فایل صوتی کاربر گوش بده.
+خروجی خود را فقط و فقط به عنوان یک آبجکت JSON معتبر برگردان.
+اگر کاربر درخواست یادآوری (Reminder) برای زمان خاصی داشت:
+{"is_reminder": true, "minutes": تعداد_دقیقه_به_صورت_عدد_صحیح, "message": "موضوع یادآوری خلاصه", "response": "تاییدیه دوستانه برای کاربر"}
+اگر کاربر صرفاً حرف معمولی زد یا سوالی پرسید:
+{"is_reminder": false, "minutes": 0, "message": "", "response": "پاسخ متنی و کامل تو به حرف کاربر"}
+توجه: زمان‌ها را به دقیقه تبدیل کن (مثلاً اگر گفت 2 ساعت دیگه، minutes را 120 قرار بده).
+"""
+        
+        # معرفی فایل صوتی به SDK جدید گوگل
+        audio_part = types.Part.from_bytes(data=downloaded_file, mime_type="audio/ogg")
+        text_part = types.Part.from_text(text=system_prompt)
+        contents = [types.Content(role="user", parts=[audio_part, text_part])]
+        
+        # اجبار مدل به برگرداندن JSON
+        config = types.GenerateContentConfig(response_mime_type="application/json")
+        
+        # 3. ارسال به جمینای (با سیستم خودترمیم‌شونده)
+        bot_reply_json = None
+        random.shuffle(genai_clients) 
+        
+        for client in genai_clients:
+            try:
+                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+                bot_reply_json = response.text
+                break
+            except Exception as e:
+                err_str = str(e).lower()
+                if "eof" in err_str or "disconnected" in err_str or "ssl" in err_str:
+                    try:
+                        response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+                        bot_reply_json = response.text
+                        break
+                    except:
+                        continue
+                elif "429" in err_str or "exhausted" in err_str:
+                    continue
+                else:
+                    raise e
+
+        if not bot_reply_json:
+            bot.reply_to(message, "❌ سرورهای هوش مصنوعی شلوغ هستند. لطفاً دوباره تلاش کنید.")
+            return
+
+        # 4. تحلیل خروجی JSON و اقدام
+        try:
+            result = json.loads(bot_reply_json.strip())
+            
+            if result.get("is_reminder"):
+                minutes = int(result.get("minutes", 0))
+                reminder_text = result.get("message", "یادآوری")
+                ai_response = result.get("response", f"⏰ چشم، {minutes} دقیقه دیگه یادت میندازم.")
+                
+                send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
+
+                db_run(supabase.table("scheduled_reminders").insert({
+                    "user_id": user_id,
+                    "message_text": reminder_text,
+                    "send_at": send_at.isoformat(),
+                    "is_sent": False
+                }))
+
+                bot.reply_to(message, ai_response)
+                
+            else:
+                ai_response = result.get("response", "متوجه نشدم.")
+                
+                # ذخیره در حافظه (ثبت اینکه کاربر ویس داده)
+                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "user", "content": "[پیام صوتی]" }))
+                db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "model", "content": ai_response}))
+                
+                bot.reply_to(message, ai_response)
+                
+        except json.JSONDecodeError:
+            bot.reply_to(message, "❌ خطا در درک پیام صوتی. لطفاً واضح‌تر بگویید.")
+
+    except Exception as e:
+        bot.reply_to(message, f"❌ خطای سیستم صوتی: {str(e)}")
+
+# ==========================================
+# 🧠 منطق پیام‌های متنی (Text)
 # ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
@@ -59,7 +157,6 @@ def handle_message(message):
     if not text:
         return
 
-    # حل مشکل قطعی سوکت تلگرام
     try:
         bot.send_chat_action(user_id, 'typing')
     except Exception:
@@ -94,16 +191,15 @@ def handle_message(message):
         # 2. سیستم یادآور زمان‌بندی شده (هم عامیانه هم با دستور)
         text_normalized = fa_to_en_digits(text)
         
-        # پشتیبانی از: "/remind 5 سلام" یا "۵ دقیقه دیگه بگو سلام" یا "۱۰ دقیقه بعد پیام بده فلان"
         pattern = r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$"
         match = re.search(pattern, text_normalized, re.IGNORECASE)
 
         if match:
             try:
-                if match.group(1):  # فرمت دستوری /remind
+                if match.group(1):  
                     minutes = int(match.group(1))
                     reminder_text = match.group(2)
-                else:  # فرمت عامیانه فارسی
+                else:  
                     minutes = int(match.group(3))
                     reminder_text = match.group(4)
 
@@ -153,7 +249,7 @@ def handle_message(message):
         if is_save:
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
-        # 4. ارتباط با جمنای (با سیستم خودترمیم‌شونده قطعی سرور)
+        # 4. ارتباط با جمنای
         bot_reply = None
         random.shuffle(genai_clients) 
         
@@ -197,7 +293,6 @@ def webhook():
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
         
-        # 🟢 قفل کردن همزمانی با دیتابیس Supabase 🟢
         try:
             supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
         except Exception as e:
@@ -213,11 +308,9 @@ def webhook():
 
 @app.route('/cron/send-reminders', methods=['GET', 'POST'])
 def send_reminders():
-    """ارسال یک‌بارهٔ پیام‌های زمان‌بندی‌شده‌ای که زمانشان فرا رسیده است"""
     now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
     
     try:
-        # دریافت پیام‌های ارسال‌نشده‌ای که زمانشان رسیده یا گذشته است
         res = db_run(
             supabase.table("scheduled_reminders")
             .select("*")
@@ -228,10 +321,8 @@ def send_reminders():
         sent_count = 0
         for row in res.data:
             try:
-                # ارسال پیام یک‌باره به کاربر در تلگرام
                 bot.send_message(row["user_id"], row["message_text"])
                 
-                # ثبت ارسال شدن پیام در دیتابیس تا دوباره ارسال نشود
                 db_run(
                     supabase.table("scheduled_reminders")
                     .update({"is_sent": True})
@@ -247,4 +338,4 @@ def send_reminders():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات بدون مشکل، با سیستم خودترمیم‌شونده، یادآور هوشمند و قفل دیتابیس فعال است!"
+    return "✅ ربات بدون مشکل، با سیستم صوتی هوشمند، یادآور و قفل دیتابیس فعال است!"
