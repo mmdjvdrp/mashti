@@ -11,8 +11,6 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-import bot_planner_api
-
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -28,6 +26,79 @@ genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
 IRAN_TZ = pytz.timezone('Asia/Tehran')
 
+# ==========================================
+# 🗓️ توابع اتصال به تقویم (بدون نیاز به فایل مجزا)
+# ==========================================
+def link_account(telegram_id, user_uuid):
+    try:
+        res = supabase.table("planner_data").select("user_id, data").eq("user_id", user_uuid).execute()
+        if not res.data:
+            return False, "❌ حساب کاربری وب پیدا نشد! مطمئن شوید که کد را درست کپی کرده‌اید."
+        
+        data = res.data[0]['data']
+        data['telegram_id'] = str(telegram_id)
+        supabase.table("planner_data").update({"data": data}).eq("user_id", user_uuid).execute()
+        return True, "✅ حساب وب شما با موفقیت به ربات تلگرام متصل شد! \n\nحالا می‌توانید بگویید: «امروز چه کارهایی دارم؟» یا «تسک ورزش رو تیک بزن»."
+    except Exception as e:
+        return False, f"❌ خطا در ارتباط با دیتابیس: {str(e)}"
+
+def get_user_planner_data(telegram_id):
+    try:
+        res = supabase.table("planner_data").select("user_id, data").eq("data->>telegram_id", str(telegram_id)).execute()
+        if res.data:
+            return res.data[0]['user_id'], res.data[0]['data']
+    except Exception:
+        pass
+    return None, None
+
+def generate_planner_prompt_context(planner_data):
+    if not planner_data:
+        return ""
+    
+    today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
+    todos = planner_data.get("todos", [])
+    today_todos = [t for t in todos if t.get("date") == today or t.get("isDaily")]
+    
+    if not today_todos:
+        return "کاربر هیچ کار (To-Do) ثبت شده‌ای برای امروز ندارد."
+
+    tasks_text = ""
+    for t in today_todos:
+        if t.get("isDaily"):
+            done_dates = t.get("doneDates", {})
+            is_done = done_dates.get(today, False)
+        else:
+            is_done = t.get("done", False)
+            
+        status = "انجام شده" if is_done else "در انتظار انجام"
+        tasks_text += f"- ID: {t['id']} | عنوان: {t['title']} | وضعیت: {status}\n"
+        
+    return f"لیست کارهای امروز کاربر (از سایت تقویم):\n{tasks_text}"
+
+def process_planner_action(supabase_user_id, planner_data, action, action_id):
+    if action == "tick_todo" and action_id:
+        today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
+        todos = planner_data.get("todos", [])
+        updated = False
+        for t in todos:
+            if t['id'] == action_id:
+                if t.get("isDaily"):
+                    if "doneDates" not in t:
+                        t["doneDates"] = {}
+                    t["doneDates"][today] = True
+                else:
+                    t["done"] = True
+                updated = True
+                break
+        
+        if updated:
+            supabase.table("planner_data").update({"data": planner_data}).eq("user_id", supabase_user_id).execute()
+            return True
+    return False
+
+# ==========================================
+# 🛠️ توابع کمکی ربات
+# ==========================================
 def db_run(query):
     try:
         return query.execute()
@@ -44,6 +115,9 @@ def fa_to_en_digits(text):
     translation_table = str.maketrans(persian_digits + arabic_digits, english_digits + english_digits)
     return text.translate(translation_table)
 
+# ==========================================
+# 🎤 پردازش فایل‌های صوتی
+# ==========================================
 @bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
     user_id = message.from_user.id
@@ -64,8 +138,8 @@ def handle_voice(message):
         downloaded_file = bot.download_file(file_info.file_path)
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
-        planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
+        supabase_user_id, planner_data = get_user_planner_data(user_id)
+        planner_context = generate_planner_prompt_context(planner_data)
 
         system_prompt = f"""تو یک دستیار هوشمند هستی. زمان فعلی ایران: {current_time_iran}
 {f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
@@ -111,7 +185,7 @@ def handle_voice(message):
             action = result.get("action")
             action_id = result.get("action_id")
             if action and action_id and planner_data:
-                bot_planner_api.process_planner_action(supabase, supabase_user_id, planner_data, action, action_id)
+                process_planner_action(supabase_user_id, planner_data, action, action_id)
             
             if result.get("is_reminder"):
                 minutes = max(int(result.get("minutes", 0)), 0)
@@ -129,6 +203,9 @@ def handle_voice(message):
     except Exception as e:
         bot.edit_message_text(f"❌ خطای سیستم: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
 
+# ==========================================
+# 🧠 پردازش پیام‌های متنی
+# ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     user_id = message.from_user.id
@@ -138,22 +215,19 @@ def handle_message(message):
     if not text:
         return
 
-    # ========================================================
-    # 🔴 شکارچی دستور اتصال (کاملا ایزوله قبل از هوش مصنوعی)
-    # ========================================================
-    if text.startswith("/connect"):
+    # 🔴 دستور اتصال
+    if text.lower().startswith("/connect"):
         try:
             parts = text.split()
             if len(parts) >= 2:
                 uuid_code = parts[1].strip()
-                success, msg = bot_planner_api.link_account(supabase, user_id, uuid_code)
+                success, msg = link_account(user_id, uuid_code)
                 bot.reply_to(message, msg)
             else:
                 bot.reply_to(message, "❌ کد اتصال یافت نشد. لطفاً کد را از سایت کپی کنید.")
         except Exception as e:
             bot.reply_to(message, f"❌ خطا: {str(e)}")
-        return # پایان عملیات. هوش مصنوعی این پیام را نمی‌بیند.
-    # ========================================================
+        return 
 
     try:
         bot.send_chat_action(user_id, 'typing')
@@ -209,8 +283,8 @@ def handle_message(message):
         history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10))
         chat_history = history_res.data[::-1]
 
-        supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
-        planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
+        supabase_user_id, planner_data = get_user_planner_data(user_id)
+        planner_context = generate_planner_prompt_context(planner_data)
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر تو {user_name} است.
@@ -263,7 +337,7 @@ def handle_message(message):
             action = result.get("action")
             action_id = result.get("action_id")
             if action and action_id and planner_data:
-                bot_planner_api.process_planner_action(supabase, supabase_user_id, planner_data, action, action_id)
+                process_planner_action(supabase_user_id, planner_data, action, action_id)
             
             ai_response = result.get("response", "پاسخی تولید نشد.")
             
@@ -278,37 +352,42 @@ def handle_message(message):
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
-@app.route('/', methods=['POST'])
-def webhook():
-    if request.headers.get('content-type') == 'application/json':
-        json_string = request.get_data().decode('utf-8')
-        update = telebot.types.Update.de_json(json_string)
+# ==========================================
+# 🌐 سیستم مسیردهی پیشرفته و ضد ارور برای Vercel
+# ==========================================
+@app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
+@app.route('/<path:path>', methods=['GET', 'POST'])
+def catch_all(path):
+    # اجرای سیستم Cron (یادآورها)
+    if 'cron' in path or 'send-reminders' in path:
+        now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
-            supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
+            res = db_run(supabase.table("scheduled_reminders").select("*").eq("is_sent", False).lte("send_at", now_utc))
+            sent_count = 0
+            for row in res.data:
+                try:
+                    bot.send_message(row["user_id"], row["message_text"])
+                    db_run(supabase.table("scheduled_reminders").update({"is_sent": True}).eq("id", row["id"]))
+                    sent_count += 1
+                except Exception:
+                    pass
+            return jsonify({"status": "success", "processed": sent_count}), 200
         except Exception as e:
-            if "duplicate" in str(e) or "23505" in str(e):
-                return jsonify({"status": "already processed"}), 200
-        bot.process_new_updates([update])
-        return jsonify({"status": "ok"}), 200
-    return jsonify({"status": "error"}), 403
+            return jsonify({"status": "error", "message": str(e)}), 500
 
-@app.route('/cron/send-reminders', methods=['GET', 'POST'])
-def send_reminders():
-    now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    try:
-        res = db_run(supabase.table("scheduled_reminders").select("*").eq("is_sent", False).lte("send_at", now_utc))
-        sent_count = 0
-        for row in res.data:
+    # اجرای دریافت پیام‌ها از تلگرام (Webhook)
+    if request.method == 'POST':
+        if request.headers.get('content-type') == 'application/json':
+            json_string = request.get_data().decode('utf-8')
+            update = telebot.types.Update.de_json(json_string)
             try:
-                bot.send_message(row["user_id"], row["message_text"])
-                db_run(supabase.table("scheduled_reminders").update({"is_sent": True}).eq("id", row["id"]))
-                sent_count += 1
-            except Exception:
-                pass
-        return jsonify({"status": "success", "processed": sent_count}), 200
-    except Exception as e:
-        return jsonify({"status": "error", "message": str(e)}), 500
+                supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
+            except Exception as e:
+                if "duplicate" in str(e) or "23505" in str(e):
+                    return jsonify({"status": "already processed"}), 200
+            bot.process_new_updates([update])
+            return jsonify({"status": "ok"}), 200
+        return jsonify({"status": "error"}), 403
 
-@app.route('/', methods=['GET'])
-def index():
-    return "✅ ربات مجهز به تقویم و دستیار هوشمند فعال است!"
+    # صفحه اصلی برای تست
+    return "✅ سرور پایتون به صورت یکپارچه نصب شد و ربات در حال کار است!"
