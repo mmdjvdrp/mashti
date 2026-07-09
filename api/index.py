@@ -181,20 +181,22 @@ def handle_message(message):
         bot.send_chat_action(user_id, 'typing')
     except Exception:
         pass 
-
-    try:
-        # 1. بخش گاوصندوق امنیتی
-        if text.startswith("/lock"):
-            try:
-                parts = text.split(" ", 3)
-                db_run(supabase.table("secure_vaults").insert({
-                    "user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]
-                }))
-                bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
-            except Exception:
-                bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
-            return 
-
+        
+    # === ۱. دستور اتصال اکانت تقویم (نسخه اصلاح شده و ضدخطا) ===
+    if text_lower.startswith("/connect"):
+        try:
+            parts = text.split()
+            if len(parts) >= 2:
+                uuid_code = parts[1].strip()
+                success, msg = bot_planner_api.link_account(supabase, user_id, uuid_code)
+                bot.reply_to(message, msg)
+            else:
+                bot.reply_to(message, "❌ لطفاً کد اتصال را همراه با دستور وارد کنید.\nمثال: `/connect 12345678-abcd-1234-abcd`", parse_mode="Markdown")
+        except Exception as e:
+            bot.reply_to(message, f"❌ خطایی در سیستم اتصال رخ داد: {str(e)}")
+        
+        # این return به شدت مهم است! باعث می‌شود دستور به Gemini نرود.
+        return
         if text.startswith("/unlock"):
             try:
                 parts = text.split(" ", 2)
