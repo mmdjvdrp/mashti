@@ -188,7 +188,8 @@ def handle_voice(message):
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                response = client.models.generate_content(model='gemini-1.5-flash', contents=contents, config=config)
+                # اینجا به 2.5 فلش تغییر کرد
+                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply_text = response.text
                 break
             except Exception as e:
@@ -347,7 +348,8 @@ def handle_message(message):
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                response = client.models.generate_content(model='gemini-1.5-flash', contents=contents, config=config)
+                # اینجا به 2.5 فلش تغییر کرد
+                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
                 bot_reply = response.text
                 break
             except Exception as e:
