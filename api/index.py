@@ -17,13 +17,12 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# 🟢 تنظیمات کاملاً داینامیک از Vercel خوانده می‌شود
 keys_string = os.environ.get("GEMINI_API_KEY", "")
 API_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
 
-# اگر آدرسی در ورسل نبود، پیش‌فرض از اوپن‌روتر استفاده می‌کند
+# 🟢 استفاده از مدل بسیار باهوش گوگل روی سرور اوپن‌روتر
 AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://openrouter.ai/api/v1")
-AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.5-flash") 
+AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.0-flash-exp:free") 
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False)
 app = Flask(__name__)
@@ -192,24 +191,43 @@ def handle_message(message):
         planner_context = generate_planner_prompt_context(planner_data)
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر: {user_name}. زمان: {current_time_iran}
+        # 🟢 پرامپت جدید، قدرتمند و آموزش‌دیده (شستشوی مغزی!)
+        sys_instruct = f"""تو یک دستیار هوشمند، بسیار باهوش و خوش‌برخورد به نام "دستیار تقویم" هستی.
+نام کاربر تو: {user_name}
+زمان فعلی ایران: {current_time_iran}
 
-⚠️ تو مستقیماً به پایگاه داده تقویم متصل هستی.
+⚠️ تو مستقیماً به پایگاه داده تقویم کاربر متصل هستی.
 {f"✅ وضعیت: کاربر متصل است.\n{planner_context}" if planner_data else "❌ وضعیت: کاربر متصل نیست."}
 
-خروجی تو باید دقیقاً و فقط یک آبجکت JSON باشد. هیچ متنی خارج از JSON ننویس.
+قوانین بسیار مهم:
+1. تو باید درخواست کاربر را دقیق تحلیل کنی. اگر مربوط به مدیریت کارها (ToDo) بود، اکشن مناسب را انتخاب کن.
+2. پاسخ تو باید صمیمی، کوتاه و به زبان فارسی روان باشد.
+3. خروجی تو باید **فقط و فقط یک JSON معتبر** باشد. به هیچ وجه متنی قبل یا بعد از آکولادها ننویس.
+
+ساختار JSON:
 {{
-  "action": null,
-  "action_id": null,
-  "action_text": null,
-  "response": "پاسخ دوستانه تو به کاربر"
+  "action": "tick_todo" یا "add_todo" یا null,
+  "action_id": "شناسه تسک" (فقط اگر action برابر tick_todo بود، از لیست بالا پیدا کن),
+  "action_text": "عنوان تسک" (فقط اگر action برابر add_todo بود),
+  "response": "پاسخ متنی و صمیمی تو به کاربر"
 }}
 
-- تیک زدن تسک: action="tick_todo" و action_id=شناسه تسک.
-- اضافه کردن تسک: action="add_todo" و action_text=عنوان کار.
+🔴 چند مثال برای یادگیری دقیق تو (Few-Shot):
+
+مثال ۱:
+کاربر: خرید نان رو به کارهام اضافه کن.
+خروجی تو: {{"action": "add_todo", "action_id": null, "action_text": "خرید نان", "response": "چشم، خرید نان رو به لیست کارهای امروزت اضافه کردم! 🛒"}}
+
+مثال ۲:
+کاربر: تسک پروژه رو انجام دادم، تیک بزن.
+خروجی تو: {{"action": "tick_todo", "action_id": "t171500202", "action_text": null, "response": "عالیه! خسته نباشی. تسک پروژه رو برات تیک زدم. ✅"}}
+
+مثال ۳:
+کاربر: سلام، امروز چه کارهایی دارم؟
+خروجی تو: {{"action": null, "action_id": null, "action_text": null, "response": "سلام! امروز این کارها رو تو لیستت داری: 1. ورزش 2. مطالعه. کدومشو انجام دادی؟"}}
 """
         if saved_facts:
-            sys_instruct += f"\n\n⚠️ قوانین کاربر:\n- " + "\n- ".join(saved_facts)
+            sys_instruct += f"\n\n⚠️ قوانین شخصی کاربر:\n- " + "\n- ".join(saved_facts)
 
         messages = [{"role": "system", "content": sys_instruct}]
         for row in chat_history:
@@ -221,7 +239,6 @@ def handle_message(message):
         bot_reply = None
         last_error = "کلید API یافت نشد."
         
-        # 🟢 سیستم چرخشی هوشمند برای کلیدهای API
         random.shuffle(API_KEYS)
         for api_key in API_KEYS:
             if not api_key: continue
@@ -238,13 +255,21 @@ def handle_message(message):
                 continue
 
         if not bot_reply:
-            bot.reply_to(message, f"❌ خطا از سمت سرور هوش مصنوعی:\n`{last_error}`\nمطمئن شوید کلیدها در متغیر Vercel درست ثبت شده‌اند.", parse_mode="Markdown")
+            bot.reply_to(message, f"❌ خطا از سمت سرور هوش مصنوعی:\n`{last_error}`", parse_mode="Markdown")
             return
 
         try:
+            # پاک‌سازی هوشمند خروجی از تگ‌های مارک‌داون احتمالی
             clean_text = bot_reply.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text.replace("```json", "").replace("```", "").strip()
+            elif clean_text.startswith("```"):
+                clean_text = clean_text.replace("```", "").strip()
+                
             match = re.search(r'\{[\s\S]*\}', clean_text)
-            if match: clean_text = match.group(0)
+            if match: 
+                clean_text = match.group(0)
+                
             result = json.loads(clean_text)
             
             action = result.get("action")
@@ -257,7 +282,7 @@ def handle_message(message):
             bot.reply_to(message, ai_response)
 
         except json.JSONDecodeError:
-            bot.reply_to(message, "❌ خطا در پردازش پاسخ سایت هوش مصنوعی. (احتمالاً فرمت خروجی به هم ریخته است)")
+            bot.reply_to(message, "❌ خطا در پردازش پاسخ سایت هوش مصنوعی.\n(مدل خروجی را خراب کرد).")
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
