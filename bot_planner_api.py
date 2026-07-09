@@ -6,23 +6,24 @@ IRAN_TZ = pytz.timezone('Asia/Tehran')
 def link_account(supabase, telegram_id, user_uuid):
     """وصل کردن آیدی تلگرام به اطلاعات تقویم کاربر در دیتابیس"""
     try:
+        # پیدا کردن کاربر در دیتابیس با استفاده از UUID سایت
         res = supabase.table("planner_data").select("user_id, data").eq("user_id", user_uuid).execute()
         if not res.data:
-            return False, "❌ حساب کاربری وب پیدا نشد! مطمئن شوید که حداقل یک بار وارد سایت تقویم شده‌اید."
+            return False, "❌ حساب کاربری وب پیدا نشد! مطمئن شوید که کد را درست کپی کرده‌اید."
         
         data = res.data[0]['data']
         # آیدی تلگرام را در داخل JSON دیتابیس تقویم ذخیره می‌کنیم
         data['telegram_id'] = str(telegram_id)
+        
+        # آپدیت دیتابیس
         supabase.table("planner_data").update({"data": data}).eq("user_id", user_uuid).execute()
-        return True, "✅ حساب وب شما با موفقیت به ربات تلگرام متصل شد! \n\nحالا می‌توانید بگویید: «امروز چه کارهایی دارم؟» یا «تسک خرید کتاب رو انجام دادم، تیک بزن»."
+        return True, "✅ حساب وب شما با موفقیت به ربات تلگرام متصل شد! \n\nحالا می‌توانید بگویید: «امروز چه کارهایی دارم؟» یا «تسک ورزش رو تیک بزن»."
     except Exception as e:
         return False, f"❌ خطا در ارتباط با دیتابیس: {str(e)}"
-
 
 def get_user_planner_data(supabase, telegram_id):
     """گرفتن اطلاعات کاربر بر اساس آیدی تلگرام"""
     try:
-        # جستجو در دیتابیس بر اساس فیلد telegram_id در داخل JSON
         res = supabase.table("planner_data").select("user_id, data").eq("data->>telegram_id", str(telegram_id)).execute()
         if res.data:
             return res.data[0]['user_id'], res.data[0]['data']
@@ -30,9 +31,8 @@ def get_user_planner_data(supabase, telegram_id):
         pass
     return None, None
 
-
 def generate_planner_prompt_context(planner_data):
-    """تبدیل کارهای امروز کاربر به متنی که هوش مصنوعی آن را بفهمد"""
+    """تبدیل کارهای امروز به متنی که هوش مصنوعی بفهمد"""
     if not planner_data:
         return ""
     
@@ -56,9 +56,8 @@ def generate_planner_prompt_context(planner_data):
         
     return f"لیست کارهای امروز کاربر (از سایت تقویم):\n{tasks_text}"
 
-
 def process_planner_action(supabase, supabase_user_id, planner_data, action, action_id):
-    """اعمال تغییراتی که هوش مصنوعی دستور داده است (مثلا تیک زدن)"""
+    """تیک زدن کارها توسط هوش مصنوعی"""
     if action == "tick_todo" and action_id:
         today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
         todos = planner_data.get("todos", [])
