@@ -9,7 +9,7 @@ import telebot
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from supabase import create_client, Client
-from openai import OpenAI  # 🟢 تغییر به کتابخانه استاندارد OpenAI
+from openai import OpenAI
 
 load_dotenv()
 
@@ -17,16 +17,13 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 SUPABASE_URL = os.environ.get("SUPABASE_URL")
 SUPABASE_KEY = os.environ.get("SUPABASE_KEY")
 
-# 🟢 گرفتن کلیدهای سایت Conduit از متغیر Vercel
-# (همان کلیدهایی که با sk-cdt شروع می‌شوند را با ویرگول در GEMINI_API_KEY ورسل قرار بده)
+# 🟢 تنظیمات کاملاً داینامیک از Vercel خوانده می‌شود
 keys_string = os.environ.get("GEMINI_API_KEY", "")
-CONDUIT_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
+API_KEYS = [k.strip() for k in keys_string.split(",") if k.strip()]
 
-# 🟢 آدرس دقیق API سایت Conduit
-AI_BASE_URL = "https://conduit.ozdoev.net/api/v1"
-
-# 🟢 مدلی که می‌خواهیم استفاده کنیم
-AI_MODEL = "gemini-2.5-flash" 
+# اگر آدرسی در ورسل نبود، پیش‌فرض از اوپن‌روتر استفاده می‌کند
+AI_BASE_URL = os.environ.get("AI_BASE_URL", "https://openrouter.ai/api/v1")
+AI_MODEL = os.environ.get("AI_MODEL", "google/gemini-2.5-flash") 
 
 bot = telebot.TeleBot(TELEGRAM_BOT_TOKEN, threaded=False)
 app = Flask(__name__)
@@ -121,8 +118,7 @@ def fa_to_en_digits(text):
 # ==========================================
 @bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
-    # سایت Conduit از دریافت مستقیم فایل صوتی پشتیبانی نمی‌کند
-    bot.reply_to(message, "🎤 به دلیل استفاده از سرور واسطه Conduit، فعلاً پردازش مستقیم فایل صوتی غیرفعال است. لطفاً درخواست خود را تایپ کنید! ⌨️")
+    bot.reply_to(message, "🎤 به دلیل استفاده از سرور واسطه OpenRouter، فعلاً پردازش مستقیم فایل صوتی غیرفعال است. لطفاً درخواست خود را تایپ کنید! ⌨️")
 
 # ==========================================
 # 🧠 پردازش پیام‌های متنی
@@ -215,7 +211,6 @@ def handle_message(message):
         if saved_facts:
             sys_instruct += f"\n\n⚠️ قوانین کاربر:\n- " + "\n- ".join(saved_facts)
 
-        # 🟢 ساختار پیام‌ها با استاندارد OpenAI / Conduit
         messages = [{"role": "system", "content": sys_instruct}]
         for row in chat_history:
             role = "user" if row["role"] == "user" else "assistant"
@@ -226,9 +221,9 @@ def handle_message(message):
         bot_reply = None
         last_error = "کلید API یافت نشد."
         
-        # 🟢 سیستم چرخشی هوشمند برای کلیدهای سایت Conduit
-        random.shuffle(CONDUIT_KEYS)
-        for api_key in CONDUIT_KEYS:
+        # 🟢 سیستم چرخشی هوشمند برای کلیدهای API
+        random.shuffle(API_KEYS)
+        for api_key in API_KEYS:
             if not api_key: continue
             try:
                 ai_client = OpenAI(api_key=api_key, base_url=AI_BASE_URL)
@@ -243,7 +238,7 @@ def handle_message(message):
                 continue
 
         if not bot_reply:
-            bot.reply_to(message, f"❌ خطا از سمت سرور Conduit:\n`{last_error}`\nمطمئن شوید کلیدهای این سایت را در متغیر Vercel قرار داده‌اید.", parse_mode="Markdown")
+            bot.reply_to(message, f"❌ خطا از سمت سرور هوش مصنوعی:\n`{last_error}`\nمطمئن شوید کلیدها در متغیر Vercel درست ثبت شده‌اند.", parse_mode="Markdown")
             return
 
         try:
@@ -262,13 +257,13 @@ def handle_message(message):
             bot.reply_to(message, ai_response)
 
         except json.JSONDecodeError:
-            bot.reply_to(message, "❌ خطا در پردازش پاسخ سایت Conduit. (احتمالاً فرمت خروجی به هم ریخته است)")
+            bot.reply_to(message, "❌ خطا در پردازش پاسخ سایت هوش مصنوعی. (احتمالاً فرمت خروجی به هم ریخته است)")
 
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
 # ==========================================
-# 🌐 سیستم مسیردهی برای Vercel
+# 🌐 سیستم مسیردهی پیشرفته برای Vercel
 # ==========================================
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
 @app.route('/<path:path>', methods=['GET', 'POST'])
@@ -301,4 +296,4 @@ def catch_all(path):
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "error"}), 403
 
-    return "✅ سرور پایتون متصل به سایت Conduit نصب شد!"
+    return "✅ سرور پایتون متصل به OpenRouter نصب شد!"
