@@ -11,12 +11,8 @@ from supabase import create_client, Client
 from google import genai
 from google.genai import types
 
-# اضافه کردن ماژول جدید تقویم (مطمئن شو فایل bot_planner_api.py کنار این فایل باشه)
 import bot_planner_api
 
-# ==========================================
-# ⚙️ خواندن متغیرهای محیطی
-# ==========================================
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -30,12 +26,8 @@ app = Flask(__name__)
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 
-# منطقه زمانی ایران
 IRAN_TZ = pytz.timezone('Asia/Tehran')
 
-# ==========================================
-# 🛠️ توابع کمکی
-# ==========================================
 def db_run(query):
     try:
         return query.execute()
@@ -52,9 +44,6 @@ def fa_to_en_digits(text):
     translation_table = str.maketrans(persian_digits + arabic_digits, english_digits + english_digits)
     return text.translate(translation_table)
 
-# ==========================================
-# 🎤 پردازش فایل‌های صوتی و ویدیویی
-# ==========================================
 @bot.message_handler(content_types=['voice', 'audio', 'video_note'])
 def handle_voice(message):
     user_id = message.from_user.id
@@ -73,17 +62,15 @@ def handle_voice(message):
 
         file_info = bot.get_file(file_id)
         downloaded_file = bot.download_file(file_info.file_path)
-        
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
-        # گرفتن اطلاعات تقویم برای پیام صوتی
         supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
         planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
 
         system_prompt = f"""تو یک دستیار هوشمند هستی. زمان فعلی ایران: {current_time_iran}
 {f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
-خروجی تو باید دقیقاً یک JSON معتبر باشد (بدون تگ مارک‌داون ```).
+خروجی تو باید دقیقاً یک JSON معتبر باشد.
 ساختار الزامی:
 {{
   "is_reminder": false, 
@@ -94,7 +81,6 @@ def handle_voice(message):
   "response": "پاسخ تو به کاربر"
 }}
 
-- اگر کاربر درخواست یادآوری داشت: is_reminder را true کن، زمان را در minutes بنویس و موضوع را در message.
 - اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست بالا پیدا کن.
 - پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
 """
@@ -102,11 +88,7 @@ def handle_voice(message):
         audio_part = types.Part.from_bytes(data=downloaded_file, mime_type=mime_type)
         text_part = types.Part.from_text(text=system_prompt)
         contents = [types.Content(role="user", parts=[audio_part, text_part])]
-        
-        config = types.GenerateContentConfig(
-            tools=[{"google_search": {}}],
-            response_mime_type="application/json"
-        )
+        config = types.GenerateContentConfig(tools=[{"google_search": {}}], response_mime_type="application/json")
         
         bot_reply_text = None
         random.shuffle(genai_clients) 
@@ -126,13 +108,11 @@ def handle_voice(message):
             result = json.loads(bot_reply_text.strip())
             ai_response = result.get("response", "انجام شد.")
 
-            # اعمال دستورات تقویم (تیک زدن تسک از طریق ویس)
             action = result.get("action")
             action_id = result.get("action_id")
             if action and action_id and planner_data:
                 bot_planner_api.process_planner_action(supabase, supabase_user_id, planner_data, action, action_id)
             
-            # ثبت یادآور صوتی
             if result.get("is_reminder"):
                 minutes = max(int(result.get("minutes", 0)), 0)
                 reminder_text = result.get("message", "یادآوری")
@@ -149,26 +129,19 @@ def handle_voice(message):
     except Exception as e:
         bot.edit_message_text(f"❌ خطای سیستم: {str(e)}", chat_id=user_id, message_id=status_msg.message_id)
 
-# ==========================================
-# 🧠 منطق پیام‌های متنی (Text)
-# ==========================================
 @bot.message_handler(func=lambda message: True)
 def handle_message(message):
     user_id = message.from_user.id
     user_name = message.from_user.first_name or "کاربر"
     text = message.text.strip() if message.text else ""
-    text_lower = text.lower()
 
     if not text:
         return
 
-    try:
-        bot.send_chat_action(user_id, 'typing')
-    except Exception:
-        pass 
-
-    # === ۱. دستور اتصال اکانت تقویم (کاملا ایزوله شده) ===
-    if text_lower.startswith("/connect"):
+    # ========================================================
+    # 🔴 شکارچی دستور اتصال (کاملا ایزوله قبل از هوش مصنوعی)
+    # ========================================================
+    if text.startswith("/connect"):
         try:
             parts = text.split()
             if len(parts) >= 2:
@@ -176,21 +149,25 @@ def handle_message(message):
                 success, msg = bot_planner_api.link_account(supabase, user_id, uuid_code)
                 bot.reply_to(message, msg)
             else:
-                bot.reply_to(message, "❌ لطفاً کد اتصال را همراه با دستور وارد کنید.\nمثال: `/connect 12345678-abcd`", parse_mode="Markdown")
+                bot.reply_to(message, "❌ کد اتصال یافت نشد. لطفاً کد را از سایت کپی کنید.")
         except Exception as e:
-            bot.reply_to(message, f"❌ خطایی در سیستم اتصال رخ داد: {str(e)}")
-        return # <--- این ریتورن باعث میشه هوش مصنوعی درگیر این پیام نشه!
+            bot.reply_to(message, f"❌ خطا: {str(e)}")
+        return # پایان عملیات. هوش مصنوعی این پیام را نمی‌بیند.
+    # ========================================================
 
     try:
-        # 2. بخش گاوصندوق امنیتی
+        bot.send_chat_action(user_id, 'typing')
+    except:
+        pass 
+
+    try:
+        text_lower = text.lower()
         if text.startswith("/lock"):
             try:
                 parts = text.split(" ", 3)
-                db_run(supabase.table("secure_vaults").insert({
-                    "user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]
-                }))
+                db_run(supabase.table("secure_vaults").insert({"user_id": user_id, "box_name": parts[1], "password": parts[2], "content": parts[3]}))
                 bot.reply_to(message, f"🔒 اطلاعات در جعبه '{parts[1]}' قفل شد.")
-            except Exception:
+            except:
                 bot.reply_to(message, "❌ فرمت اشتباه است: /lock [اسم] [رمز] [متن]")
             return 
 
@@ -203,11 +180,10 @@ def handle_message(message):
                     bot.reply_to(message, f"🔓 اطلاعات جعبه:\n\n- {box_contents}")
                 else:
                     bot.reply_to(message, "❌ جعبه پیدا نشد یا رمز اشتباه است!")
-            except Exception:
+            except:
                 bot.reply_to(message, "❌ فرمت اشتباه است: /unlock [اسم] [رمز]")
             return 
 
-        # 3. سیستم یادآور متنی
         text_normalized = fa_to_en_digits(text)
         pattern = r"^(?:/remind\s+(\d+)\s+(.+)|(\d+)\s*دقیقه\s*(?:دیگه|بعد)\s*(?:بهم\s*)?(?:بگو|پیام\s*بده)\s*(.+))$"
         match = re.search(pattern, text_normalized, re.IGNORECASE)
@@ -218,13 +194,10 @@ def handle_message(message):
             else:  
                 minutes, reminder_text = int(match.group(3)), match.group(4)
             send_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(minutes=minutes)
-            db_run(supabase.table("scheduled_reminders").insert({
-                "user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False
-            }))
+            db_run(supabase.table("scheduled_reminders").insert({"user_id": user_id, "message_text": reminder_text, "send_at": send_at.isoformat(), "is_sent": False}))
             bot.reply_to(message, f"⏰ یادآور ثبت شد! {minutes} دقیقه دیگر به شما پیام می‌دهم:\n\n«{reminder_text}»")
             return
 
-        # 4. بخش چت، حافظه و تقویم با هوش مصنوعی
         is_save = text_lower.endswith("save") or text_lower.endswith("ذخیره کن")
         if is_save:
             db_run(supabase.table("chat_memory").insert({"user_id": user_id, "role": "fact", "content": text}))
@@ -236,14 +209,12 @@ def handle_message(message):
         history_res = db_run(supabase.table("chat_memory").select("*").eq("user_id", user_id).neq("role", "fact").order("created_at", desc=True).limit(10))
         chat_history = history_res.data[::-1]
 
-        # === خواندن اطلاعات تقویم کاربر ===
         supabase_user_id, planner_data = bot_planner_api.get_user_planner_data(supabase, user_id)
         planner_context = bot_planner_api.generate_planner_prompt_context(planner_data)
-
         current_time_iran = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d %H:%M:%S")
 
         sys_instruct = f"""تو یک دستیار هوشمند هستی. نام کاربر تو {user_name} است.
-زمان فعلی در ایران: {current_time_iran}
+زمان فعلی: {current_time_iran}
 {f"توجه: کاربر به سیستم تقویم سایت متصل است.\n{planner_context}" if planner_data else ""}
 
 توجه بسیار مهم: خروجی تو باید دقیقاً و فقط یک آبجکت JSON معتبر باشد.
@@ -254,14 +225,12 @@ def handle_message(message):
   "response": "پاسخ کامل تو به کاربر"
 }}
 
-- اگر کاربر گفت کاری را انجام داده (مثلاً: "خرید رو تیک بزن")، شناسه آن تسک را از لیست پیدا کن، action را روی "tick_todo" قرار بده و شناسه را در action_id بگذار.
-- در غیر این صورت فیلدهای action و action_id را null بگذار.
+- اگر کاربر گفت کاری را انجام داده، action را "tick_todo" قرار بده و شناسه را در action_id بگذار.
 - جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
 """
         if saved_facts:
             sys_instruct += f"\n\n⚠️ اطلاعات دائم کاربر:\n- " + "\n- ".join(saved_facts)
 
-        # 🟢 اجبار مدل به تولید فقط JSON
         config = types.GenerateContentConfig(
             system_instruction=sys_instruct, 
             tools=[{"google_search": {}}],
@@ -291,7 +260,6 @@ def handle_message(message):
         try:
             result = json.loads(bot_reply.strip())
             
-            # هندل کردن اکشن‌های تقویم
             action = result.get("action")
             action_id = result.get("action_id")
             if action and action_id and planner_data:
@@ -310,25 +278,18 @@ def handle_message(message):
     except Exception as e:
         bot.reply_to(message, f"❌ خطای سیستم: {str(e)}")
 
-# ==========================================
-# 🌐 تنظیمات Webhook و Cron
-# ==========================================
 @app.route('/', methods=['POST'])
 def webhook():
     if request.headers.get('content-type') == 'application/json':
         json_string = request.get_data().decode('utf-8')
         update = telebot.types.Update.de_json(json_string)
-        
         try:
             supabase.table("processed_updates").insert({"update_id": update.update_id}).execute()
         except Exception as e:
-            err_msg = str(e)
-            if "duplicate" in err_msg or "23505" in err_msg:
+            if "duplicate" in str(e) or "23505" in str(e):
                 return jsonify({"status": "already processed"}), 200
-        
         bot.process_new_updates([update])
         return jsonify({"status": "ok"}), 200
-        
     return jsonify({"status": "error"}), 403
 
 @app.route('/cron/send-reminders', methods=['GET', 'POST'])
@@ -350,4 +311,4 @@ def send_reminders():
 
 @app.route('/', methods=['GET'])
 def index():
-    return "✅ ربات مجهز به ساعت زنده ایران، سرچ گوگل، یادآور هوشمند و اتصال تقویم است!"
+    return "✅ ربات مجهز به تقویم و دستیار هوشمند فعال است!"
