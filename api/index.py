@@ -1,5 +1,6 @@
 import os
 import re
+import time
 import datetime
 import random
 import json
@@ -27,7 +28,7 @@ genai_clients = [genai.Client(api_key=key) for key in GEMINI_KEYS]
 IRAN_TZ = pytz.timezone('Asia/Tehran')
 
 # ==========================================
-# 🗓️ توابع اتصال به تقویم (بدون نیاز به فایل مجزا)
+# 🗓️ توابع اتصال به تقویم و مدیریت Taskها
 # ==========================================
 def link_account(telegram_id, user_uuid):
     try:
@@ -75,11 +76,13 @@ def generate_planner_prompt_context(planner_data):
         
     return f"لیست کارهای امروز کاربر (از سایت تقویم):\n{tasks_text}"
 
-def process_planner_action(supabase_user_id, planner_data, action, action_id):
+def process_planner_action(supabase_user_id, planner_data, action, action_id, action_text):
+    today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
+    todos = planner_data.get("todos", [])
+    updated = False
+    
+    # 1. تیک زدن کار موجود
     if action == "tick_todo" and action_id:
-        today = datetime.datetime.now(IRAN_TZ).strftime("%Y-%m-%d")
-        todos = planner_data.get("todos", [])
-        updated = False
         for t in todos:
             if t['id'] == action_id:
                 if t.get("isDaily"):
@@ -90,10 +93,24 @@ def process_planner_action(supabase_user_id, planner_data, action, action_id):
                     t["done"] = True
                 updated = True
                 break
-        
-        if updated:
-            supabase.table("planner_data").update({"data": planner_data}).eq("user_id", supabase_user_id).execute()
-            return True
+                
+    # 2. اضافه کردن کار جدید
+    elif action == "add_todo" and action_text:
+        new_todo = {
+            "id": "t" + str(int(time.time() * 1000)),
+            "title": action_text,
+            "date": today,
+            "done": False,
+            "isDaily": False,
+            "doneDates": {}
+        }
+        todos.append(new_todo)
+        planner_data["todos"] = todos
+        updated = True
+    
+    if updated:
+        supabase.table("planner_data").update({"data": planner_data}).eq("user_id", supabase_user_id).execute()
+        return True
     return False
 
 # ==========================================
@@ -152,10 +169,12 @@ def handle_voice(message):
   "message": "",
   "action": null,
   "action_id": null,
+  "action_text": null,
   "response": "پاسخ تو به کاربر"
 }}
 
 - اگر کاربر خواست تسکی را تیک بزند: action را "tick_todo" بگذار و action_id را از لیست بالا پیدا کن.
+- اگر خواست کار جدیدی اضافه کند: action را "add_todo" بگذار و عنوان کار را در action_text بنویس.
 - پاسخ صوتی تو همیشه در فیلد response قرار می‌گیرد.
 """
         
@@ -165,17 +184,19 @@ def handle_voice(message):
         config = types.GenerateContentConfig(tools=[{"google_search": {}}], response_mime_type="application/json")
         
         bot_reply_text = None
+        last_error = ""
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+                response = client.models.generate_content(model='gemini-1.5-flash', contents=contents, config=config)
                 bot_reply_text = response.text
                 break
-            except Exception:
+            except Exception as e:
+                last_error = str(e)
                 continue
 
         if not bot_reply_text:
-            bot.edit_message_text("❌ ارتباط با سرور هوش مصنوعی برقرار نشد.", chat_id=user_id, message_id=status_msg.message_id)
+            bot.edit_message_text(f"❌ ارتباط با سرور هوش مصنوعی برقرار نشد.\n\nجزئیات خطا:\n`{last_error}`", chat_id=user_id, message_id=status_msg.message_id, parse_mode="Markdown")
             return
 
         try:
@@ -184,8 +205,10 @@ def handle_voice(message):
 
             action = result.get("action")
             action_id = result.get("action_id")
-            if action and action_id and planner_data:
-                process_planner_action(supabase_user_id, planner_data, action, action_id)
+            action_text = result.get("action_text")
+            
+            if action and planner_data:
+                process_planner_action(supabase_user_id, planner_data, action, action_id, action_text)
             
             if result.get("is_reminder"):
                 minutes = max(int(result.get("minutes", 0)), 0)
@@ -296,10 +319,12 @@ def handle_message(message):
 {{
   "action": null,
   "action_id": null,
+  "action_text": null,
   "response": "پاسخ کامل تو به کاربر"
 }}
 
-- اگر کاربر گفت کاری را انجام داده، action را "tick_todo" قرار بده و شناسه را در action_id بگذار.
+- اگر کاربر گفت کاری را انجام داده، action را "tick_todo" قرار بده و شناسه آن کار را از لیست بالا در action_id بگذار.
+- اگر کاربر خواست کار جدیدی اضافه کند (مثلا: "خرید نان رو به لیست اضافه کن"): action را "add_todo" قرار بده و عنوان کار را در action_text بنویس.
 - جواب و صحبت‌هایت با کاربر را همیشه در فیلد response بنویس.
 """
         if saved_facts:
@@ -318,17 +343,19 @@ def handle_message(message):
             contents.append(types.Content(role="user", parts=[types.Part.from_text(text=text)]))
 
         bot_reply = None
+        last_error = ""
         random.shuffle(genai_clients) 
         for client in genai_clients:
             try:
-                response = client.models.generate_content(model='gemini-2.5-flash', contents=contents, config=config)
+                response = client.models.generate_content(model='gemini-1.5-flash', contents=contents, config=config)
                 bot_reply = response.text
                 break
-            except Exception:
+            except Exception as e:
+                last_error = str(e)
                 continue
                     
         if not bot_reply:
-            bot.reply_to(message, "❌ سیستم هوش مصنوعی پاسخگو نبود.")
+            bot.reply_to(message, f"❌ سیستم هوش مصنوعی پاسخگو نبود.\n\nجزئیات خطا:\n`{last_error}`", parse_mode="Markdown")
             return
 
         try:
@@ -336,8 +363,10 @@ def handle_message(message):
             
             action = result.get("action")
             action_id = result.get("action_id")
-            if action and action_id and planner_data:
-                process_planner_action(supabase_user_id, planner_data, action, action_id)
+            action_text = result.get("action_text")
+            
+            if action and planner_data:
+                process_planner_action(supabase_user_id, planner_data, action, action_id, action_text)
             
             ai_response = result.get("response", "پاسخی تولید نشد.")
             
@@ -358,7 +387,6 @@ def handle_message(message):
 @app.route('/', defaults={'path': ''}, methods=['GET', 'POST'])
 @app.route('/<path:path>', methods=['GET', 'POST'])
 def catch_all(path):
-    # اجرای سیستم Cron (یادآورها)
     if 'cron' in path or 'send-reminders' in path:
         now_utc = datetime.datetime.now(datetime.timezone.utc).isoformat()
         try:
@@ -375,7 +403,6 @@ def catch_all(path):
         except Exception as e:
             return jsonify({"status": "error", "message": str(e)}), 500
 
-    # اجرای دریافت پیام‌ها از تلگرام (Webhook)
     if request.method == 'POST':
         if request.headers.get('content-type') == 'application/json':
             json_string = request.get_data().decode('utf-8')
@@ -389,5 +416,4 @@ def catch_all(path):
             return jsonify({"status": "ok"}), 200
         return jsonify({"status": "error"}), 403
 
-    # صفحه اصلی برای تست
     return "✅ سرور پایتون به صورت یکپارچه نصب شد و ربات در حال کار است!"
